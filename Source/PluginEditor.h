@@ -42,7 +42,7 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
         juce::RangedAudioParameter* param = nullptr;
         float pos = 0.0f;
-        int lit = -1;
+        int litLo = 0, litHi = -1;   // lit LED indices [litLo, litHi)
         juce::Rectangle<int> region;   // 2x px
         juce::Image cache;             // background + LED light for the region
     };
@@ -54,6 +54,7 @@ private:
     juce::Point<float> ledPos (int knob, int i) const;
 
     void knobChanged (int k);
+    static void litRange (int knob, float pos, int& lo, int& hi);
     void rebuildKnobCache (Knob&);
     void rebuildGrCache();
     void updateSpectrum();
@@ -93,10 +94,12 @@ private:
     static constexpr int fftOrder = 12, fftSize = 1 << fftOrder, nPts = 220;
     juce::dsp::FFT fft { fftOrder };
     std::vector<float> ring = std::vector<float> ((size_t) fftSize, 0.0f), fftData = std::vector<float> ((size_t) fftSize * 2, 0.0f),
-                       window = std::vector<float> ((size_t) fftSize, 0.0f), pullBuf = std::vector<float> (1 << 15, 0.0f);
+                       window = std::vector<float> ((size_t) fftSize, 0.0f), pullBuf = std::vector<float> (1 << 15, 0.0f),
+                       pullIn = std::vector<float> (1 << 15, 0.0f), pullHarm = std::vector<float> (1 << 15, 0.0f),
+                       ringH = std::vector<float> ((size_t) fftSize, 0.0f);
     int ringPos = 0;
     std::array<double, nPts> freqs {};
-    std::array<float, nPts> specDb {}, eqDb {};
+    std::array<float, nPts> specDb {}, harmDb {}, eqDb {};
     bool specActive = false;
     float eqKeyPr = -1, eqKeyColor = -1, eqKeyGs = -1;
     bool expanded = false;

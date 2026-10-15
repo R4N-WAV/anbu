@@ -113,11 +113,12 @@ public:
         for (auto* b : { &hpL_, &hpR_ }) b->highpass(fs, SC_HPF, SC_HPQ);
         for (auto* b : { &shL_, &shR_ }) b->highshelf(fs, SC_SHF, 0.7071, SC_SHG);
         rip_.lowpass(fs, RIP_FC, 0.7071);
+        aLF_ = 1.0 - std::exp(-2 * kPi * CAP_LF / fs); aW_ = 1.0 - std::exp(-dt_ / 0.05);
         for (int c = 0; c < 2; ++c) for (int k = 0; k < 4; ++k) eq_[c][k].section(fs, c == 0 ? LIN_EQ_L[k] : LIN_EQ_R[k]);
         reset();
     }
     void reset() {
-        env_ = um_ = 0; G_[0] = G_[1] = G_[2] = 0;
+        env_ = um_ = 0; G_[0] = G_[1] = G_[2] = 0; lfy_ = eLF_ = eAll_ = 0;
         for (auto* b : { &hpL_, &hpR_, &shL_, &shR_, &rip_ }) b->reset();
         for (auto& c : eq_) for (auto& b : c) b.reset();
     }
@@ -130,12 +131,17 @@ public:
         if (s.peakReduction <= 0.0) Pamp_ = 0.0;
         toneAmt_ = toneAmt;
     }
-    // x: input at base rate (after input gain). out: conductance (signal part, with ripple) and slow part.
-    void process(const float* xL, const float* xR, int n, double* Gout, double* Gslow) noexcept {
+    // x: input at base rate (after input gain). out: conductance (signal part, with ripple), slow part, and
+    // capW = how far the series cap is allowed to act (bass dominance of the programme; 1 = a pure bass tone).
+    void process(const float* xL, const float* xR, int n, double* Gout, double* Gslow, double* capW) noexcept {
         using namespace consts;
         const double q[3] = { Q1, Q2, 1.0 - Q1 - Q2 }, ta[3] = { TA1, TA2, TA3 }, tr[3] = { TR1, TR2, TR3 };
         for (int i = 0; i < n; ++i) {
             double l = xL[i], r = xR[i];
+            const double xm = 0.5 * (l + r);
+            lfy_ += aLF_ * (xm - lfy_);
+            eLF_ += aW_ * (lfy_ * lfy_ - eLF_); eAll_ += aW_ * (xm * xm - eAll_);
+            capW[i] = std::max(std::pow(std::clamp(eLF_ / (eAll_ + 1e-15), 0.0, 1.0), CAP_K), 1e-4);
             // the sidechain sees the Color tone curve (the cell sits after it)
             const double tl = eq_[0][3].run(eq_[0][2].run(eq_[0][1].run(eq_[0][0].run(l)))) * std::pow(10.0, LIN_EQ_G0[0] / 20.0);
             const double trr = eq_[1][3].run(eq_[1][2].run(eq_[1][1].run(eq_[1][0].run(r)))) * std::pow(10.0, LIN_EQ_G0[1] / 20.0);
@@ -168,7 +174,7 @@ public:
 private:
     double fs_ = 48000, dt_ = 1 / 48000.0, aA_ = 0, aR_ = 0, aM_ = 0;
     double k_ = 1, a_ = 1, invAsat2_ = 1, Pamp_ = 1, Gidle_ = 0, toneAmt_ = 0;
-    double env_ = 0, um_ = 0, G_[3] = { 0, 0, 0 };
+    double env_ = 0, um_ = 0, G_[3] = { 0, 0, 0 }, aLF_ = 0, aW_ = 0, lfy_ = 0, eLF_ = 0, eAll_ = 0;
     Biquad hpL_, hpR_, shL_, shR_, rip_, eq_[2][4];
 };
 
@@ -208,7 +214,8 @@ public:
         eqG0_[0] = std::pow(10.0, LIN_EQ_G0[0] / 20.0); eqG0_[1] = std::pow(10.0, LIN_EQ_G0[1] / 20.0);
     }
     // G / Gslow are given at base rate for this block (nBase samples); audio has nBase*os samples.
-    void process(float* L, float* R, int nOS, const double* G, const double* Gslow) noexcept {
+    // harm (optional, nOS samples): mono sum of what the nonlinear stages add (for the display only).
+    void process(float* L, float* R, int nOS, const double* G, const double* Gslow, const double* capW, float* harm = nullptr) noexcept {
         using namespace consts;
         float* io[2] = { L, R };
         for (int i = 0; i < nOS; ++i) {
@@ -220,13 +227,15 @@ public:
                 const double B = bpr_ / (1.0 + Gs / BELL_D) + BELL_G1 * Gs / (Gs + BELL_G2) * std::exp(-Gs / BELL_G3);
                 for (auto& c : ch_) { c.bell.peaking(fs_, BELL_F, BELL_Q, B); c.bell2.peaking(fs_, 20600.0, 0.99, B * BELL2_R); }
             }
+            double hsum = 0.0;
             for (int c = 0; c < 2; ++c) {
                 Ch& s = ch_[c];
                 double x = io[c][i];
                 // ---- Color: tone curve (L/R component tolerance) + harmonic generator
                 const double t = s.eq[3].run(s.eq[2].run(s.eq[1].run(s.eq[0].run(x)))) * eqG0_[c];
                 x += toneAmt_ * (t - x);
-                if (kappa_ > 0.0) x += kappa_ * colorResidual(s, x, c);
+                double hc = 0.0;
+                if (kappa_ > 0.0) { hc = kappa_ * colorResidual(s, x, c); x += hc; }
                 // ---- LA-2A audio path
                 const double ax = std::fabs(x);
                 s.ef += (ax > s.ef ? aEA_ : aER_) * (ax - s.ef);
@@ -243,7 +252,7 @@ public:
                 const double modg = (1.0 + Gc) / std::max(1.0 + Gc + dG, 1e-3);
                 const double vin = s.hf0.run(s.bell2.run(s.bell.run(x)));
                 const double Rc1 = 1.0 + 1.0 / std::max(Gc, 1e-9);
-                const double k = 1.0 - std::exp(-dt_ / (Cn_ * Rc1));
+                const double k = 1.0 - std::exp(-dt_ / (Cn_ / capW[bi] * Rc1));
                 s.vc += k * (vin - s.vc);
                 const double v = modg * (vin + Gc * s.vc) / (Gc + 1.0);
                 // ---- output stage (the LA-2A output tubes/transformer at their +5 dB operating level)
@@ -253,7 +262,11 @@ public:
                 double yo = uo + C2 * u2 + C3 * u2 * ul + C4 * u2 * u2 + C5 * u2 * u2 * ul + C7 * u2 * u2 * u2 * ul;
                 s.dco.run(yo);
                 io[c][i] = (float)((yo - s.dco.y) / M_);
+                // display: Color harmonics (through the cell's gain), cell modulation, output-stage curvature
+                const double vlin = (vin + Gc * s.vc) / (Gc + 1.0);
+                hsum += hc / (1.0 + Gc) + (v - vlin) + (yo - uo) / M_;
             }
+            if (harm != nullptr) harm[i] = (float)(0.5 * hsum);
         }
     }
 private:
@@ -292,8 +305,10 @@ private:
 };
 
 // ------------------------------------------------------------------------------------------ Color knob mapping
-inline double colorKappa(double c) { c = std::clamp(c, 0.0, 1.0); return 2.0 * c * c * c; }     // 0.25 -> -30 dB (Lindell default), 0.8 -> THD max
-inline double colorTone(double c) { c = std::clamp(c, 0.0, 1.0); return std::min(1.0, c / 0.25); }
+// The last quarter of the knob pushes further: up to twice the harmonics (+6 dB) and 1.5x the tone curve at 100 %.
+inline double colorPush(double c) { const double u = std::clamp((c - 0.75) / 0.25, 0.0, 1.0); return u * u * (3.0 - 2.0 * u); }
+inline double colorKappa(double c) { c = std::clamp(c, 0.0, 1.0); return 2.0 * c * c * c * (1.0 + colorPush(c)); }   // 0.25 -> Lindell default, ~0.8 -> THD max, 1.0 -> +12 dB over THD max
+inline double colorTone(double c) { c = std::clamp(c, 0.0, 1.0); return std::min(1.0, c / 0.25) + 0.5 * colorPush(c); }
 
 // ------------------------------------------------------------------------------------------ display curve (editor)
 // Steady-state frequency response of the linear part of the path for the current settings and slow cell
@@ -303,7 +318,7 @@ inline std::complex<double> biquadResponse(const Biquad& b, double w) {
     const std::complex<double> z1 = std::polar(1.0, -w), z2 = z1 * z1;
     return (b.b0 + b.b1 * z1 + b.b2 * z2) / (1.0 + b.a1 * z1 + b.a2 * z2);
 }
-inline void displayCurve(double pr, double color, double Gs, const double* freqs, double* outDb, int n) {
+inline void displayCurve(double pr, double color, double Gs, double capW, const double* freqs, double* outDb, int n) {
     using namespace consts;
     constexpr double fsd = 192000.0;
     const double tone = colorTone(color);
@@ -322,7 +337,7 @@ inline void displayCurve(double pr, double color, double Gs, const double* freqs
         std::complex<double> h = 1.0 + tone * (t - 1.0);
         h *= biquadResponse(bell, w) * biquadResponse(bell2, w) * biquadResponse(hf0, w);
         if (G > 1e-6) {
-            const double tau = Cn * (1.0 + 1.0 / G);
+            const double tau = Cn / std::max(capW, 1e-4) * (1.0 + 1.0 / G);
             const std::complex<double> st(0.0, 2 * kPi * f * tau);
             h *= (1.0 + G + st) / ((1.0 + G) * (1.0 + st));
         }

@@ -56,14 +56,16 @@ public:
     //   meterGrDb : gain reduction of the optical cell (dB)
     //   meterVuDb : output level for the VU needle, 0 on the scale = -18 dBFS RMS
     //   meterGs   : slow cell conductance (drives the EQ curve in the display)
-    std::atomic<float> meterGrDb { 0.0f }, meterVuDb { -100.0f }, meterGs { 0.0f };
+    std::atomic<float> meterGrDb { 0.0f }, meterVuDb { -100.0f }, meterGs { 0.0f }, meterCapW { 1.0f };
 
-    // output samples (mono sum) for the spectrum display; single producer (audio) / single consumer (editor)
-    int pullAnalyser (float* dest, int maxSamples);
+    // spectrum display feeds (mono): output, input (after input gain), added harmonics.
+    // single producer (audio) / single consumer (editor)
+    int pullAnalyser (float* out, float* in, float* harm, int maxSamples);
     double getAnalyserRate() const { return fs; }
 
     // editor-only state kept across editor open/close
     bool uiAnalyserExpanded = false;
+    bool uiMeterOut = false;          // needle shows output level instead of GR (saved with the session)
 
 private:
     void rebuildOversampling (int factorIndex, bool linearPhase);
@@ -82,7 +84,7 @@ private:
     anbu::SideLift side;
     anbu::NoiseGen noise;
 
-    std::vector<double> gBuf, gsBuf;
+    std::vector<double> gBuf, gsBuf, capBuf;
     std::vector<float> monoR;
     std::vector<anbu::Settings> subSettings;
     juce::AudioBuffer<float> dryBuf;
@@ -93,5 +95,8 @@ private:
     double vuMs = 0.0;
     static constexpr int anaSize = 1 << 15;
     juce::AbstractFifo anaFifo { anaSize };
-    std::vector<float> anaBuf = std::vector<float> ((size_t) anaSize, 0.0f);
+    std::array<std::vector<float>, 3> anaBuf { std::vector<float> ((size_t) anaSize, 0.0f), std::vector<float> ((size_t) anaSize, 0.0f),
+                                              std::vector<float> ((size_t) anaSize, 0.0f) };
+    std::vector<float> inMono, harmBase, harmOS;
+    float lastOutGain = 1.0f, lastMix = 1.0f;
 };

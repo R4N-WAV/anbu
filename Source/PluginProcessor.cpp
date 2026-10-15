@@ -7,22 +7,26 @@ APVTS::ParameterLayout AnbuProcessor::createLayout()
 {
     using namespace juce;
     std::vector<std::unique_ptr<RangedAudioParameter>> p;
-    auto pct = [] (float v, int) { return String (v, 0) + " %"; };
-    auto dbs = [] (float v, int) { return (v > 0 ? "+" : "") + String (v, 1) + " dB"; };
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::pr, 1 }, "Peak Reduction", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 40.0f,
-                                                        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 1); })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::color, 1 }, "Color", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 25.0f,
-                                                        AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::input, 1 }, "Input", NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
-                                                        AudioParameterFloatAttributes().withStringFromValueFunction (dbs)));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::output, 1 }, "Output", NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
-                                                        AudioParameterFloatAttributes().withStringFromValueFunction (dbs)));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mix, 1 }, "Mix", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
-                                                        AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
+    // whole-number steps everywhere
+    auto pct = [] (float v, int) { return String (juce::roundToInt (v)) + " %"; };
+    auto dbs = [] (float v, int) { const int i = juce::roundToInt (v); return (i > 0 ? "+" : "") + String (i) + " dB"; };
+    auto num = [] (const String& t) { return t.retainCharacters ("-+0123456789.").getFloatValue(); };
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::pr, 1 }, "Peak Reduction", NormalisableRange<float> (0.0f, 100.0f, 1.0f), 40.0f,
+                                                        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)); })
+                                                                                       .withValueFromStringFunction (num)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::color, 1 }, "Color", NormalisableRange<float> (0.0f, 100.0f, 1.0f), 25.0f,
+                                                        AudioParameterFloatAttributes().withStringFromValueFunction (pct).withValueFromStringFunction (num)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::input, 1 }, "Input", NormalisableRange<float> (-24.0f, 24.0f, 1.0f), 0.0f,
+                                                        AudioParameterFloatAttributes().withStringFromValueFunction (dbs).withValueFromStringFunction (num)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::output, 1 }, "Output", NormalisableRange<float> (-24.0f, 24.0f, 1.0f), 0.0f,
+                                                        AudioParameterFloatAttributes().withStringFromValueFunction (dbs).withValueFromStringFunction (num)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mix, 1 }, "Mix", NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
+                                                        AudioParameterFloatAttributes().withStringFromValueFunction (pct).withValueFromStringFunction (num)));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::mode, 1 }, "Mode", StringArray { "Compress", "Limit" }, 0));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::noiseOn, 1 }, "Noise", false));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::noiseLevel, 1 }, "Noise Level", NormalisableRange<float> (-120.0f, -60.0f, 0.1f), -96.0f,
-                                                        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dBFS"; })));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::noiseLevel, 1 }, "Noise Level", NormalisableRange<float> (-120.0f, -60.0f, 1.0f), -96.0f,
+                                                        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " dB"; })
+                                                                                       .withValueFromStringFunction (num)));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::os, 1 }, "Oversampling", StringArray { "Off", "2x", "4x", "8x" }, 2));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::phase, 1 }, "OS Phase", StringArray { "Low Latency", "Linear" }, 0));
     return { p.begin(), p.end() };
@@ -57,8 +61,12 @@ void AnbuProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         }
     gBuf.assign ((size_t) maxBlock, 0.0);
     gsBuf.assign ((size_t) maxBlock, 0.0);
+    capBuf.assign ((size_t) maxBlock, 1.0);
     dryBuf.setSize (2, maxBlock);
     monoR.assign ((size_t) maxBlock, 0.0f);
+    inMono.assign ((size_t) maxBlock, 0.0f);
+    harmBase.assign ((size_t) maxBlock, 0.0f);
+    harmOS.assign ((size_t) maxBlock * 8, 0.0f);
     subSettings.assign ((size_t) (maxBlock / 32 + 2), anbu::Settings {});
     dryDelay.prepare ({ sampleRate, (juce::uint32) maxBlock, 2 });
     dryDelay.reset();
@@ -130,7 +138,7 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     for (int i = 0; i < n; ++i) { dryDelay.pushSample (0, L[i]); dL[i] = dryDelay.popSample (0); }
     for (int i = 0; i < n; ++i) { dryDelay.pushSample (1, R[i]); dR[i] = dryDelay.popSample (1); }
 
-    for (int i = 0; i < n; ++i) { const float g = inGain.getNextValue(); L[i] *= g; R[i] *= g; }
+    for (int i = 0; i < n; ++i) { const float g = inGain.getNextValue(); L[i] *= g; R[i] *= g; inMono[(size_t) i] = 0.5f * (L[i] + R[i]); }
 
     // ---- control path at the base rate, settings refreshed every 32 samples
     constexpr int SUB = 32;
@@ -144,7 +152,7 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         s.limit = limit;
         subSettings[(size_t) sb] = s;
         control.setSettings (s, anbu::colorTone (s.color));
-        control.process (L + i0, R + i0, m, gBuf.data() + i0, gsBuf.data() + i0);
+        control.process (L + i0, R + i0, m, gBuf.data() + i0, gsBuf.data() + i0, capBuf.data() + i0);
     }
 
     // ---- audio path at the oversampled rate
@@ -156,7 +164,7 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             const int i0 = sb * SUB, m = juce::jmin (SUB, n - i0);
             const auto& s = subSettings[(size_t) sb];
             audio.setSettings (s, anbu::colorTone (s.color), anbu::colorKappa (s.color));
-            audio.process (aL + i0 * factor, aR + i0 * factor, m * factor, gBuf.data() + i0, gsBuf.data() + i0);
+            audio.process (aL + i0 * factor, aR + i0 * factor, m * factor, gBuf.data() + i0, gsBuf.data() + i0, capBuf.data() + i0, harmOS.data() + i0 * factor);
         }
     };
     if (activeOs != nullptr)
@@ -170,6 +178,14 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     else
         runAudio (L, R);
 
+    // added harmonics, back to the base rate (box average; display only)
+    for (int i = 0; i < n; ++i)
+    {
+        float acc = 0.0f;
+        for (int k = 0; k < factor; ++k) acc += harmOS[(size_t) (i * factor + k)];
+        harmBase[(size_t) i] = acc / (float) factor;
+    }
+
     // ---- 3D side lift, noise, output, mix
     side.process (L, R, n);
     if (apvts.getRawParameterValue (ids::noiseOn)->load() > 0.5f)
@@ -179,6 +195,7 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     for (int i = 0; i < n; ++i)
     {
         const float g = outGain.getNextValue(), w = mixAmt.getNextValue();
+        lastOutGain = g; lastMix = w;
         L[i] = w * L[i] * g + (1.0f - w) * dL[i];
         R[i] = w * R[i] * g + (1.0f - w) * dR[i];
         ss += 0.5 * ((double) L[i] * L[i] + (double) R[i] * R[i]);
@@ -189,28 +206,38 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     for (int i = 0; i < n; ++i) gmax = juce::jmax (gmax, gsBuf[(size_t) i]);
     meterGrDb.store ((float) (20.0 * std::log10 (1.0 + gmax)));
     meterGs.store ((float) gsBuf[(size_t) (n - 1)]);
+    meterCapW.store ((float) capBuf[(size_t) (n - 1)]);
     const double a = std::exp (-(double) n / (0.05 * fs));               // 50 ms mean square; the needle adds VU ballistics
     vuMs = a * vuMs + (1.0 - a) * ss / n;
     meterVuDb.store ((float) (10.0 * std::log10 (vuMs + 1e-20) + 18.0));
 
-    // ---- analyser feed (mono sum); drops samples if the editor is not reading
+    // ---- analyser feed: output, input (after input gain), added harmonics (all mono sums)
     {
         const auto scope = anaFifo.write (n);
         int k = 0;
         for (int b = 0; b < 2; ++b)
         {
-            float* dst = anaBuf.data() + (b == 0 ? scope.startIndex1 : scope.startIndex2);
+            const int start = b == 0 ? scope.startIndex1 : scope.startIndex2;
             const int m = b == 0 ? scope.blockSize1 : scope.blockSize2;
-            for (int j = 0; j < m; ++j, ++k) dst[j] = 0.5f * (L[k] + R[k]);
+            for (int j = 0; j < m; ++j, ++k)
+            {
+                anaBuf[0][(size_t) (start + j)] = 0.5f * (L[k] + R[k]);
+                anaBuf[1][(size_t) (start + j)] = inMono[(size_t) k];
+                anaBuf[2][(size_t) (start + j)] = harmBase[(size_t) k] * lastOutGain * lastMix;
+            }
         }
     }
 }
 
-int AnbuProcessor::pullAnalyser (float* dest, int maxSamples)
+int AnbuProcessor::pullAnalyser (float* out, float* in, float* harm, int maxSamples)
 {
     const auto scope = anaFifo.read (juce::jmin (maxSamples, anaFifo.getNumReady()));
-    if (scope.blockSize1 > 0) std::copy (anaBuf.data() + scope.startIndex1, anaBuf.data() + scope.startIndex1 + scope.blockSize1, dest);
-    if (scope.blockSize2 > 0) std::copy (anaBuf.data() + scope.startIndex2, anaBuf.data() + scope.startIndex2 + scope.blockSize2, dest + scope.blockSize1);
+    float* dst[3] = { out, in, harm };
+    for (int c = 0; c < 3; ++c)
+    {
+        if (scope.blockSize1 > 0) std::copy (anaBuf[(size_t) c].data() + scope.startIndex1, anaBuf[(size_t) c].data() + scope.startIndex1 + scope.blockSize1, dst[c]);
+        if (scope.blockSize2 > 0) std::copy (anaBuf[(size_t) c].data() + scope.startIndex2, anaBuf[(size_t) c].data() + scope.startIndex2 + scope.blockSize2, dst[c] + scope.blockSize1);
+    }
     return scope.blockSize1 + scope.blockSize2;
 }
 
@@ -218,13 +245,18 @@ juce::AudioProcessorEditor* AnbuProcessor::createEditor() { return new AnbuEdito
 
 void AnbuProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    apvts.state.setProperty ("meterOut", uiMeterOut, nullptr);
     if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, destData);
 }
 
 void AnbuProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType())) apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        if (xml->hasTagName (apvts.state.getType()))
+        {
+            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            uiMeterOut = (bool) apvts.state.getProperty ("meterOut", false);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new AnbuProcessor(); }

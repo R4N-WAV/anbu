@@ -27,6 +27,7 @@ juce::Rectangle<float> switchBody (int i)
 }
 
 constexpr float specTopDb = -40.0f, specBottomDb = -100.0f;  // spectrum level at the +12 / -12 grid lines (3 dB/oct tilt)
+constexpr float harmBoostDb = 24.0f;                          // added harmonics are drawn magnified (x16) so they can be seen
 }
 
 // ============================================================================================ construction
@@ -80,8 +81,7 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     for (auto& kn : knobs)
     {
         kn.pos = (float) kn.slider.valueToProportionOfLength (kn.slider.getValue());
-        const int n = G::knobs[kn.index].leds;
-        kn.lit = juce::jlimit (1, n, (int) std::floor (kn.pos * (float) (n - 1) + 1e-3f) + 1);
+        litRange (kn.index, kn.pos, kn.litLo, kn.litHi);
     }
     for (auto& kn : knobs) rebuildKnobCache (kn);
     for (auto& kn : knobs)
@@ -101,6 +101,7 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     for (int i = 0; i < nPts; ++i)
         freqs[(size_t) i] = 20.0 * std::pow (1000.0, (double) i / (nPts - 1));
     specDb.fill (-140.0f);
+    harmDb.fill (-140.0f);
     eqDb.fill (0.0f);
     expanded = proc.uiAnalyserExpanded;
     for (int i = 0; i < 9; ++i) swState[(size_t) i] = switchOn (i);
@@ -154,15 +155,33 @@ juce::Point<float> AnbuEditor::ledPos (int knob, int i) const
 }
 
 // ============================================================================================ knobs
+// Which LEDs are lit: none at the knob's zero. INPUT/OUTPUT light from the centre (0 dB) outwards.
+void AnbuEditor::litRange (int knob, float pos, int& lo, int& hi)
+{
+    const int n = G::knobs[knob].leds;
+    const float p = pos * (float) (n - 1);
+    lo = hi = 0;
+    if (knob == 2 || knob == 3)
+    {
+        const int c = (n - 1) / 2;
+        if (p > (float) c + 0.5f) { lo = c + 1; hi = juce::jmin (n, (int) std::floor (p + 0.5f) + 1); }
+        else if (p < (float) c - 0.5f) { lo = juce::jmax (0, (int) std::ceil (p - 0.5f)); hi = c; }
+        return;
+    }
+    if (pos <= 0.0f) return;
+    hi = juce::jlimit (1, n, (int) std::floor (p + 0.5f) + 1);
+}
+
 void AnbuEditor::knobChanged (int k)
 {
     auto& kn = knobs[(size_t) k];
     const auto& kg = G::knobs[k];
     kn.pos = (float) kn.slider.valueToProportionOfLength (kn.slider.getValue());
-    const int lit = juce::jlimit (1, kg.leds, (int) std::floor (kn.pos * (float) (kg.leds - 1) + 1e-3f) + 1);
-    if (lit != kn.lit)
+    int lo = 0, hi = 0;
+    litRange (k, kn.pos, lo, hi);
+    if (lo != kn.litLo || hi != kn.litHi)
     {
-        kn.lit = lit;
+        kn.litLo = lo; kn.litHi = hi;
         auto dirty = kn.region.toFloat();
         for (auto& other : knobs)
             if (&other == &kn || other.region.intersects (kn.region))
@@ -194,10 +213,10 @@ void AnbuEditor::rebuildKnobCache (Knob& kn)
 
     for (const auto& src : knobs)
     {
-        if (src.lit <= 0) continue;
+        if (src.litHi <= src.litLo) continue;
         const auto& sg = G::knobs[src.index];
         const float* K = kernelFor (sg.big);
-        for (int i = 0; i < src.lit; ++i)
+        for (int i = src.litLo; i < src.litHi; ++i)
         {
             const auto p = ledPos (src.index, i);
             const auto box = juce::Rectangle<int> ((int) p.x - G::kernelLen, (int) p.y - G::kernelLen, 2 * G::kernelLen + 2, 2 * G::kernelLen + 2)
@@ -249,7 +268,7 @@ void AnbuEditor::rebuildKnobCache (Knob& kn)
             const auto& core = sg.big ? coreBig : coreSmall;
             const float ccx = sg.big ? G::Size_big::coreCx : G::Size_small::coreCx;
             const float ccy = sg.big ? G::Size_big::coreCy : G::Size_small::coreCy;
-            for (int i = 0; i < src.lit; ++i)
+            for (int i = src.litLo; i < src.litHi; ++i)
             {
                 const auto p = ledPos (src.index, i);
                 if (! R.toFloat().expanded (24.0f).contains (p)) continue;
@@ -410,55 +429,62 @@ void AnbuEditor::freezeMeters (float vuDb, float gr)
 // ============================================================================================ analyser
 void AnbuEditor::updateSpectrum()
 {
-    const int got = proc.pullAnalyser (pullBuf.data(), (int) pullBuf.size());
+    const int got = proc.pullAnalyser (pullBuf.data(), pullIn.data(), pullHarm.data(), (int) pullBuf.size());
     for (int i = 0; i < got; ++i)
     {
         ring[(size_t) ringPos] = pullBuf[(size_t) i];
+        ringH[(size_t) ringPos] = pullHarm[(size_t) i];
         ringPos = (ringPos + 1) & (fftSize - 1);
     }
     if (got > 0)
     {
-        for (int i = 0; i < fftSize; ++i)
-            fftData[(size_t) i] = ring[(size_t) ((ringPos + i) & (fftSize - 1))] * window[(size_t) i];
-        std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
-        fft.performFrequencyOnlyForwardTransform (fftData.data(), true);
         const double fs = juce::jmax (8000.0, proc.getAnalyserRate());
         const double norm = 2.0 / (0.5 * fftSize);           // full-scale sine -> 0 dB (Hann coherent gain 0.5)
         const double binHz = fs / fftSize;
-        auto powerAt = [&] (double bin)
-        {
-            const int b0 = juce::jlimit (0, fftSize / 2 - 1, (int) bin);
-            const double f = juce::jlimit (0.0, 1.0, bin - b0);
-            const double m0 = fftData[(size_t) b0] * norm, m1 = fftData[(size_t) (b0 + 1)] * norm;
-            return (1 - f) * m0 * m0 + f * m1 * m1;
-        };
         bool any = false;
-        for (int p = 0; p < nPts; ++p)
+        auto analyse = [&] (const std::vector<float>& src, std::array<float, nPts>& dest)
         {
-            const double f = freqs[(size_t) p];
-            const double kl = f * std::pow (2.0, -1.0 / 12.0) / binHz, kh = f * std::pow (2.0, 1.0 / 12.0) / binHz;
-            double pw = 0.0;
-            if (f >= 0.5 * fs) pw = 1e-14;
-            else if (kh - kl < 2.0) pw = powerAt (f / binHz);
-            else
+            for (int i = 0; i < fftSize; ++i)
+                fftData[(size_t) i] = src[(size_t) ((ringPos + i) & (fftSize - 1))] * window[(size_t) i];
+            std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
+            fft.performFrequencyOnlyForwardTransform (fftData.data(), true);
+            auto powerAt = [&] (double bin)
             {
-                int cnt = 0;
-                for (int b = (int) std::ceil (kl); b <= (int) std::floor (kh) && b < fftSize / 2; ++b, ++cnt)
-                    pw += (double) fftData[(size_t) b] * fftData[(size_t) b] * norm * norm;
-                pw /= juce::jmax (1, cnt);
+                const int b0 = juce::jlimit (0, fftSize / 2 - 1, (int) bin);
+                const double f = juce::jlimit (0.0, 1.0, bin - b0);
+                const double m0 = fftData[(size_t) b0] * norm, m1 = fftData[(size_t) (b0 + 1)] * norm;
+                return (1 - f) * m0 * m0 + f * m1 * m1;
+            };
+            for (int p = 0; p < nPts; ++p)
+            {
+                const double f = freqs[(size_t) p];
+                const double kl = f * std::pow (2.0, -1.0 / 12.0) / binHz, kh = f * std::pow (2.0, 1.0 / 12.0) / binHz;
+                double pw = 0.0;
+                if (f >= 0.5 * fs) pw = 1e-14;
+                else if (kh - kl < 2.0) pw = powerAt (f / binHz);
+                else
+                {
+                    int cnt = 0;
+                    for (int b = (int) std::ceil (kl); b <= (int) std::floor (kh) && b < fftSize / 2; ++b, ++cnt)
+                        pw += (double) fftData[(size_t) b] * fftData[(size_t) b] * norm * norm;
+                    pw /= juce::jmax (1, cnt);
+                }
+                const float db = (float) (10.0 * std::log10 (pw + 1e-14) + 3.0 * std::log2 (f / 1000.0));
+                float& s = dest[(size_t) p];
+                s += (db > s ? 0.6f : 0.12f) * (db - s);
+                any = any || s > specBottomDb - 6.0f;
             }
-            const float db = (float) (10.0 * std::log10 (pw + 1e-14) + 3.0 * std::log2 (f / 1000.0));
-            float& s = specDb[(size_t) p];
-            s += (db > s ? 0.6f : 0.12f) * (db - s);
-            any = any || s > specBottomDb - 6.0f;
-        }
+        };
+        analyse (ring, specDb);
+        analyse (ringH, harmDb);
         specActive = any;
         repaint2x (plotRect().expanded (6));
     }
     else if (specActive)
     {
         bool any = false;
-        for (auto& s : specDb) { s -= 1.5f; any = any || s > specBottomDb - 6.0f; }
+        for (auto* arr : { &specDb, &harmDb })
+            for (auto& s : *arr) { s -= 1.5f; any = any || s > specBottomDb - 6.0f; }
         specActive = any;
         repaint2x (plotRect().expanded (6));
     }
@@ -472,7 +498,7 @@ void AnbuEditor::updateEqCurve()
     if (std::abs (pr - eqKeyPr) < 0.05f && std::abs (color - eqKeyColor) < 0.0005f && std::abs (gs - eqKeyGs) < 0.002f * (1.0f + gs)) return;
     eqKeyPr = pr; eqKeyColor = color; eqKeyGs = gs;
     std::array<double, nPts> out {};
-    anbu::displayCurve (pr, color, gs, freqs.data(), out.data(), nPts);
+    anbu::displayCurve (pr, color, gs, proc.meterCapW.load(), freqs.data(), out.data(), nPts);
     for (int i = 0; i < nPts; ++i) eqDb[(size_t) i] = (float) out[(size_t) i];
     repaint2x (plotRect().expanded (12));
 }
@@ -530,6 +556,22 @@ void AnbuEditor::drawAnalyser (juce::Graphics& g)
         g.fillPath (fill);
         g.setColour (juce::Colour (220, 153, 69));
         g.strokePath (line, juce::PathStrokeType (2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        // added harmonics (Color + LA-2A distortion), in their own colour
+        juce::Path hl, hf;
+        hf.startNewSubPath (pr.getX() - 2.0f, pr.getBottom() + 4.0f);
+        for (int p = 0; p < nPts; ++p)
+        {
+            const float x = xOf (freqs[(size_t) p]), y = juce::jlimit (pr.getY() - 8.0f, pr.getBottom() + 4.0f, yOf (harmDb[(size_t) p] + harmBoostDb));
+            if (p == 0) hl.startNewSubPath (x, y); else hl.lineTo (x, y);
+            hf.lineTo (x, y);
+        }
+        hf.lineTo (pr.getRight() + 2.0f, pr.getBottom() + 4.0f);
+        hf.closeSubPath();
+        g.setColour (juce::Colour (255, 91, 55).withAlpha (0.5f));
+        g.fillPath (hf);
+        g.setColour (juce::Colour (255, 110, 70));
+        g.strokePath (hl, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
     // EQ curve
     {

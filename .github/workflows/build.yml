@@ -35,14 +35,6 @@ jobs:
           Copy-Item INSTALL.md dist/
           Get-ChildItem -Recurse dist | Select-Object FullName, Length | Format-Table -AutoSize
 
-      - name: Validate with pluginval
-        shell: pwsh
-        run: |
-          Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
-          Expand-Archive pluginval.zip -DestinationPath pluginval
-          & pluginval/pluginval.exe --strictness-level 5 --validate-in-process --timeout-ms 600000 "dist/Anbu.vst3"
-          if ($LASTEXITCODE -ne 0) { throw "pluginval failed" }
-
       - name: Upload plugin as a downloadable file
         uses: actions/upload-artifact@v4
         with:
@@ -50,3 +42,16 @@ jobs:
           path: dist
           if-no-files-found: error
           retention-days: 90
+
+      - name: Validate with pluginval
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval -Force
+          $exe = Get-ChildItem -Recurse pluginval -Filter pluginval.exe | Select-Object -First 1
+          if (-not $exe) { Write-Output "::error::pluginval.exe not found in the download"; exit 1 }
+          & $exe.FullName --strictness-level 5 --validate-in-process --timeout-ms 600000 --output-dir pv-log "dist/Anbu.vst3" *> pluginval.txt
+          $code = $LASTEXITCODE
+          Get-Content pluginval.txt | Select-Object -Last 25 | ForEach-Object { Write-Output "::warning::pluginval: $_" }
+          if ($code -ne 0) { Write-Output "::error::pluginval failed (exit $code)"; exit 1 }

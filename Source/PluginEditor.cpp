@@ -1,7 +1,9 @@
 #include "PluginEditor.h"
+#include "HwAssets.h"
 #include "BinaryData.h"
 
 using namespace anbu::ui;
+namespace HW = anbu::hw;
 
 // ============================================================================================ theme + fonts
 namespace
@@ -18,48 +20,128 @@ const Theme& anbu::ui::theme()
     {
         Theme o;
         o.chassis = hex (0x1c0707);   o.plateTop = hex (0x9a2a26);  o.plateBot = hex (0x771b1d);
-        o.edge = rgba (30, 0, 0, 0.5f); o.hi = rgba (255, 170, 150, 0.25f);
         o.label = hex (0xf6d283);     o.dim = hex (0xe3a596);       o.value = hex (0xfff1d8);
-        o.recess = hex (0x4f0f10);    o.slot = hex (0x1c0707);      o.seat = hex (0x5f1415);
         o.deboss = hex (0x6a1819);    o.debHi = rgba (255, 160, 150, 0.3f); o.debLo = rgba (30, 0, 0, 0.55f);
         o.logoLit = hex (0xffe9b0);   o.zari = rgba (240, 198, 104, 0.6f);
-        o.lamp = hex (0xffb341);      o.glow = rgba (255, 179, 65, 0.55f); o.lampOff = hex (0x561112);
-        o.track = rgba (246, 210, 131, 0.2f);
-        o.keyUp0 = hex (0xa8352f);    o.keyUp1 = hex (0x8a2424);    o.keyDn0 = hex (0x5c1416); o.keyDn1 = hex (0x6a1a1b);
+        o.lamp = hex (0xffb341);      o.glow = rgba (255, 179, 65, 0.55f);
         o.keyOn = hex (0xffe08a);
-        o.screen = hex (0x130506);    o.screenEdge = rgba (240, 198, 104, 0.6f);
-        o.grid = hex (0x2a1212);      o.gridMaj = hex (0x3e1b1b);
+        o.screen = hex (0x130506);    o.grid = hex (0x2a1212);      o.gridMaj = hex (0x3e1b1b);
         return o;
     }();
     return t;
 }
 
-anbu::ui::Fonts::Fonts()
+namespace
 {
-    auto load = [] (const char* name)
-    {
-        int size = 0;
-        if (auto* data = BinaryData::getNamedResource (name, size))
-            return juce::Typeface::createSystemTypefaceFor (data, (size_t) size);
-        return juce::Typeface::Ptr();
-    };
-    w500 = load ("catamaran500_ttf");
-    w600 = load ("catamaran600_ttf");
-    w700 = load ("catamaran700_ttf");
-    w800 = load ("catamaran800_ttf");
+juce::Typeface::Ptr loadTypeface (const char* name)
+{
+    int size = 0;
+    if (auto* data = BinaryData::getNamedResource (name, size))
+        return juce::Typeface::createSystemTypefaceFor (data, (size_t) size);
+    return {};
+}
+juce::Image loadImage (const char* name)
+{
+    int size = 0;
+    if (auto* data = BinaryData::getNamedResource (name, size))
+        return juce::ImageFileFormat::loadFrom (data, (size_t) size).convertedToFormat (juce::Image::ARGB);
+    return {};
+}
 }
 
-juce::Font anbu::ui::Fonts::get (int weight, float size) const
+anbu::ui::Fonts::Fonts()
 {
-    auto tf = weight >= 800 ? w800 : weight >= 700 ? w700 : weight >= 600 ? w600 : w500;
+    c600 = loadTypeface ("catamaran600_ttf");
+    c800 = loadTypeface ("catamaran800_ttf");
+    b500 = loadTypeface ("barlow500_ttf");
+    b600 = loadTypeface ("barlow600_ttf");
+    b700 = loadTypeface ("barlow700_ttf");
+}
+
+juce::Font anbu::ui::Fonts::logo (int weight, float size) const
+{
+    auto tf = weight >= 800 ? c800 : c600;
     if (tf == nullptr) return juce::Font (juce::FontOptions().withPointHeight (size));
     return juce::Font (juce::FontOptions (tf).withPointHeight (size));
+}
+
+juce::Font anbu::ui::Fonts::ui (int weight, float size) const
+{
+    auto tf = weight >= 700 ? b700 : weight >= 600 ? b600 : b500;
+    if (tf == nullptr) return juce::Font (juce::FontOptions().withPointHeight (size));
+    return juce::Font (juce::FontOptions (tf).withPointHeight (size));
+}
+
+// ---------------------------------------------------------------- resampled art
+namespace
+{
+// area-average resampling (for downscaling the 2x renders without aliasing); bilinear-quality upscale otherwise
+juce::Image resample (const juce::Image& src, int w, int h)
+{
+    w = juce::jmax (1, w); h = juce::jmax (1, h);
+    if (w >= src.getWidth() && h >= src.getHeight())
+        return src.rescaled (w, h, juce::Graphics::highResamplingQuality);
+    const int sw = src.getWidth(), sh = src.getHeight();
+    const juce::Image::BitmapData in (src, juce::Image::BitmapData::readOnly);
+    // horizontal pass -> float buffer (premultiplied ARGB)
+    std::vector<float> tmp ((size_t) (w * sh * 4), 0.0f);
+    const double fx = (double) sw / w, fy = (double) sh / h;
+    for (int y = 0; y < sh; ++y)
+    {
+        const auto* row = in.getLinePointer (y);
+        for (int x = 0; x < w; ++x)
+        {
+            const double a0 = x * fx, a1 = (x + 1) * fx;
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int sx = (int) a0; sx < juce::jmin (sw, (int) std::ceil (a1)); ++sx)
+            {
+                const double wgt = juce::jmin (a1, (double) sx + 1) - juce::jmax (a0, (double) sx);
+                const auto* p = row + sx * in.pixelStride;
+                for (int c = 0; c < 4; ++c) acc[c] += (float) wgt * p[c];
+            }
+            for (int c = 0; c < 4; ++c) tmp[(size_t) ((y * w + x) * 4 + c)] = acc[c] / (float) fx;
+        }
+    }
+    juce::Image out (juce::Image::ARGB, w, h, false, juce::SoftwareImageType());
+    juce::Image::BitmapData o (out, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < h; ++y)
+    {
+        const double b0 = y * fy, b1 = (y + 1) * fy;
+        auto* orow = o.getLinePointer (y);
+        for (int x = 0; x < w; ++x)
+        {
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int sy = (int) b0; sy < juce::jmin (sh, (int) std::ceil (b1)); ++sy)
+            {
+                const double wgt = juce::jmin (b1, (double) sy + 1) - juce::jmax (b0, (double) sy);
+                for (int c = 0; c < 4; ++c) acc[c] += (float) wgt * tmp[(size_t) ((sy * w + x) * 4 + c)];
+            }
+            auto* p = orow + x * o.pixelStride;
+            for (int c = 0; c < 4; ++c) p[c] = (juce::uint8) juce::jlimit (0, 255, juce::roundToInt (acc[c] / (float) fy));
+        }
+    }
+    return out;
+}
+}
+
+const juce::Image& anbu::ui::Art::at (float ppu)
+{
+    if (! src.isValid()) return src;
+    if (std::abs (ppu - scaledFor) > 1.0e-3f || ! scaled.isValid())
+    {
+        scaledFor = ppu;
+        const float f = ppu / HW::scale;
+        scaled = std::abs (f - 1.0f) < 1.0e-3f ? src
+                                               : resample (src, juce::roundToInt ((float) src.getWidth() * f), juce::roundToInt ((float) src.getHeight() * f));
+    }
+    return scaled;
 }
 
 // ============================================================================================ helpers
 namespace
 {
-constexpr float lineH = 1.64f;   // Catamaran: (1100 + 540) / 1000
+constexpr float lineL = 1.64f;   // Catamaran: (1100 + 540) / 1000
+constexpr float lineU = 1.2f;    // Barlow: (1000 + 200) / 1000
 
 float clamp01 (float x) { return juce::jlimit (0.0f, 1.0f, x); }
 float lerp (float a, float b, float t) { return a + (b - a) * t; }
@@ -146,50 +228,10 @@ void shadow (juce::Graphics& g, const juce::Path& p, juce::Colour c, float blur,
     g.drawImageTransformed (img, juce::AffineTransform::scale (1.0f / sc).translated (area.getX(), area.getY()), true);
 }
 
-// CSS inset shadow
-void insetShadow (juce::Graphics& g, const juce::Path& shape, juce::Colour c, float blur, juce::Point<float> off)
-{
-    g.saveState();
-    g.reduceClipRegion (shape);
-    juce::Path ring;
-    ring.addRectangle (shape.getBounds().expanded (blur * 2.0f + 8.0f + std::abs (off.x) + std::abs (off.y)));
-    ring.addPath (shape);
-    ring.setUsingNonZeroWinding (false);
-    shadow (g, ring, c, blur, off);
-    g.restoreState();
-}
-
-// "0 1px 0 colour" outer hairline under a shape
-void hairlineBelow (juce::Graphics& g, const juce::Path& shape, juce::Colour c)
-{
-    juce::Path ring;
-    ring.addRectangle (shape.getBounds().expanded (4.0f));
-    ring.addPath (shape);
-    ring.setUsingNonZeroWinding (false);
-    g.saveState();
-    g.reduceClipRegion (ring);
-    g.setColour (c);
-    g.fillPath (shape, juce::AffineTransform::translation (0.0f, 1.0f));
-    g.restoreState();
-}
-
-// inside 1 px ring ("inset 0 0 0 1px")
-void innerRing (juce::Graphics& g, juce::Rectangle<float> r, float radius, juce::Colour c)
-{
-    g.setColour (c);
-    g.drawRoundedRectangle (r.reduced (0.5f), juce::jmax (0.0f, radius - 0.5f), 1.0f);
-}
-
 juce::Path roundRect (juce::Rectangle<float> r, float radius)
 {
     juce::Path p;
     p.addRoundedRectangle (r, radius);
-    return p;
-}
-juce::Path circle (float cx, float cy, float r)
-{
-    juce::Path p;
-    p.addEllipse (cx - r, cy - r, 2 * r, 2 * r);
     return p;
 }
 
@@ -200,16 +242,6 @@ void text (juce::Graphics& g, const juce::Font& f, const juce::String& s, juce::
     g.drawText (s, r, j, false);
 }
 
-juce::Path textPath (const juce::Font& f, const juce::String& s, juce::Rectangle<float> r, juce::Justification j)
-{
-    juce::GlyphArrangement ga;
-    ga.addFittedText (f, s, r.getX(), r.getY(), r.getWidth(), r.getHeight(), j, 1, 1.0f);
-    juce::Path p;
-    ga.createPath (p);
-    return p;
-}
-
-// debossed lettering: same hue as the plate, darker, a hairline of light below and shade above
 void debossText (juce::Graphics& g, const juce::Font& f, const juce::String& s, juce::Rectangle<float> r, juce::Justification j, float alpha = 1.0f)
 {
     const auto& T = theme();
@@ -218,49 +250,33 @@ void debossText (juce::Graphics& g, const juce::Font& f, const juce::String& s, 
     text (g, f, s, r, j, T.deboss.withMultipliedAlpha (alpha));
 }
 
-void strokeGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, float core, float alpha)
-{
-    if (alpha <= 0.002f) return;
-    const juce::PathStrokeType::EndCapStyle cap = juce::PathStrokeType::rounded;
-    g.setColour (c.withAlpha (0.08f * alpha)); g.strokePath (p, juce::PathStrokeType (core + 7.0f, juce::PathStrokeType::curved, cap));
-    g.setColour (c.withAlpha (0.16f * alpha)); g.strokePath (p, juce::PathStrokeType (core + 3.5f, juce::PathStrokeType::curved, cap));
-    g.setColour (c.withAlpha (0.66f * alpha)); g.strokePath (p, juce::PathStrokeType (core, juce::PathStrokeType::curved, cap));
-}
+juce::Rectangle<float> R (const HW::Rect& r) { return { (float) r.x, (float) r.y, (float) r.w, (float) r.h }; }
 
 // ---------------------------------------------------------------- layout (design units, 1000 x 700)
-struct Module { float x, w; };
-constexpr Module modules[3] = { { 24.0f, 220.0f }, { 256.0f, 598.0f }, { 866.0f, 110.0f } };
-constexpr float modTop = 24.0f, modH = 652.0f;
-
 constexpr float faderX = 134.0f, faderY0 = 350.0f, faderY1 = 528.0f;
 const juce::Rectangle<float> faderHit { 104.0f, 334.0f, 60.0f, 210.0f };
-
-constexpr float lampX = 56.5f, lampYC = 608.5f, lampYL = 645.0f;
+const juce::Rectangle<float> modeArea { 36.0f, 588.0f, 190.0f, 76.0f };
+constexpr float lampYC = 608.5f, lampYL = 645.0f;
 constexpr float modeBtnX = 204.0f, modeBtnY = 626.5f;
 
-const juce::Rectangle<float> bezelR { 280.0f, 48.0f, 550.0f, 252.0f };
-const juce::Rectangle<float> faceR { 288.0f, 56.0f, 534.0f, 236.0f };
-constexpr float pivX = 555.0f, pivY = 356.0f, meterR = 222.0f;
+const juce::Rectangle<float> faceR = R (HW::face);
+constexpr float pivX = 555.0f, pivY = 356.0f;
 const float meterSpan = juce::degreesToRadians (38.0f);
 const juce::Rectangle<float> pillGR { 732.0f, 66.0f, 36.0f, 22.0f }, pillOut { 770.0f, 66.0f, 40.0f, 22.0f };
 
-const juce::Rectangle<float> dispR { 280.0f, 318.0f, 550.0f, 220.0f };
+const juce::Rectangle<float> screenR = R (HW::screen);
 constexpr float plotX0 = 320.0f, plotX1 = 814.0f, plotY0 = 356.0f, plotY1 = 508.0f;
 constexpr float specTop = -36.0f, specBot = -96.0f, toneRange = 12.0f;
-constexpr float harmBoostDb = 24.0f;    // added harmonics are drawn magnified (x16) so they can be seen
-const juce::Rectangle<float> expandR { 796.0f, 324.0f, 26.0f, 24.0f };
-
-const juce::Rectangle<float> bankOs { 280.0f, 580.0f, 280.0f, 40.0f }, bankPh { 590.0f, 580.0f, 240.0f, 40.0f };
-const juce::Rectangle<float> noiseKeyR { 889.0f, 462.0f, 64.0f, 32.0f };
+const juce::Rectangle<float> expandR { 798.0f, 327.0f, 22.0f, 22.0f };
+const juce::Rectangle<float> readoutR { 297.0f, 326.0f, 300.0f, 24.0f };
 
 juce::Rectangle<float> keyRect (int i)
 {
-    if (i < 4) return { bankOs.getX() + 4.0f + 69.0f * (float) i, bankOs.getY() + 4.0f, 65.0f, 32.0f };
-    if (i < 6) return { bankPh.getX() + 4.0f + 118.0f * (float) (i - 4), bankPh.getY() + 4.0f, 114.0f, 32.0f };
-    return noiseKeyR;
+    if (i < 4) return { 284.0f + 69.0f * (float) i, 584.0f, 65.0f, 32.0f };
+    if (i < 6) return { 594.0f + 118.0f * (float) (i - 4), 584.0f, 114.0f, 32.0f };
+    return { 889.0f, 462.0f, 64.0f, 32.0f };
 }
 float keyFlashX (int i) { return i < 4 ? 300.0f + 70.0f * (float) i : i < 6 ? 610.0f + 120.0f * (float) (i - 4) : 921.0f; }
-const char* const keyText[7] = { "Off", "2\xc3\x97", "4\xc3\x97", "8\xc3\x97", "Low latency", "Linear", "Noise" };
 
 const juce::Rectangle<float> logoWordR { 24.0f, 52.0f, 220.0f, 48.4f }, logoByR { 24.0f, 102.0f, 220.0f, 21.3f };
 const juce::String logoWord = juce::String (juce::CharPointer_UTF8 ("\xe0\xae\x85\xe0\xae\xa9\xe0\xaf\x8d\xe0\xae\xaa\xe0\xaf\x81"));  // அன்பு
@@ -269,20 +285,19 @@ const juce::String logoRest = juce::String (juce::CharPointer_UTF8 ("\xe0\xae\xa
 
 // needle scale
 float vuFrac (float d) { return (std::pow (10.0f, d / 20.0f) - 0.1f) / (std::pow (10.0f, 3.0f / 20.0f) - 0.1f); }
-juce::Point<float> meterPt (float r, float a) { return { pivX + r * std::sin (a), pivY - r * std::cos (a) }; }
 float fracAngle (float f) { return -meterSpan + 2.0f * meterSpan * f; }
 
 // analyser maths shared by the panel and the window
 float xOfF (double f, float x0, float x1) { return x0 + (x1 - x0) * (float) (std::log10 (f / 20.0) / 3.0); }
 
-juce::Path specPath (const Spectrum& s, const std::array<float, Spectrum::nPts>& v, float offsetDb, float x0, float x1, float y0, float y1,
+juce::Path specPath (const Spectrum& s, const std::array<float, Spectrum::nPts>& v, float x0, float x1, float y0, float y1,
                      float top, float bot, bool closed)
 {
     juce::Path p;
     for (int i = 0; i < Spectrum::nPts; ++i)
     {
         const float x = xOfF (s.freqs[(size_t) i], x0, x1);
-        const float y = juce::jlimit (y0 - 2.0f, y1 + 2.0f, y0 + (top - (v[(size_t) i] + offsetDb)) / (top - bot) * (y1 - y0));
+        const float y = juce::jlimit (y0 - 2.0f, y1 + 2.0f, y0 + (top - v[(size_t) i]) / (top - bot) * (y1 - y0));
         if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
     }
     if (closed)
@@ -319,6 +334,7 @@ void drawExpandIcon (juce::Graphics& g, float x, float y, juce::Colour c)
 }
 
 const char* const knobNames[6] = { "Peak reduction", "Input", "Output", "Mix", "Noise level", "Color" };
+const char* const knobIds[5] = { "peakReduction", "inputGain", "outputGain", "mix", "noiseLevel" };
 }
 
 // ============================================================================================ analyser window
@@ -345,19 +361,22 @@ public:
         g.setColour (T.screen);
         g.fillRect (all);
 
-        // header
+        // header: a strip of the faceplate
         const juce::Rectangle<float> head (0.0f, 0.0f, (float) W, 40.0f);
         g.setGradientFill (juce::ColourGradient::vertical (T.plateTop, 0.0f, T.plateBot, 40.0f));
         g.fillRect (head);
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRect (0.0f, 0.0f, (float) W, 1.0f);
         g.setColour (T.zari.withAlpha (0.55f));
         g.fillRect (0.0f, 39.0f, (float) W, 1.0f);
-        const auto fLogo = fonts.get (800, 22.0f), fHead = fonts.get (700, 15.0f);
+        const auto fLogo = fonts.logo (800, 22.0f), fHead = fonts.ui (600, 13.0f);
         const float wLogo = juce::GlyphArrangement::getStringWidth (fLogo, logoWord);
-        debossText (g, fLogo, logoWord, { 18.0f, 20.0f - 0.5f * 22.0f * lineH, wLogo + 4.0f, 22.0f * lineH }, juce::Justification::centredLeft);
-        text (g, fHead, "Analyser", { 18.0f + wLogo + 12.0f, 20.0f - 0.5f * 15.0f * lineH + 1.5f, 120.0f, 15.0f * lineH }, juce::Justification::centredLeft, T.label);
+        debossText (g, fLogo, logoWord, { 18.0f, 20.0f - 0.5f * 22.0f * lineL, wLogo + 4.0f, 22.0f * lineL }, juce::Justification::centredLeft);
+        text (g, fHead, "A N A L Y S E R", { 18.0f + wLogo + 14.0f, 20.0f - 0.5f * 13.0f * lineU + 1.0f, 160.0f, 13.0f * lineU },
+              juce::Justification::centredLeft, T.label);
         const float ra = readoutAlpha ? readoutAlpha() : 0.0f;
         if (ra > 0.0f && readout)
-            text (g, fHead, readout(), { 460.0f, 20.0f - 0.5f * 15.0f * lineH + 1.0f, 400.0f, 15.0f * lineH }, juce::Justification::centredRight, T.value.withAlpha (ra));
+            text (g, fonts.ui (600, 15.0f), readout(), { 460.0f, 20.0f - 9.0f + 1.0f, 400.0f, 18.0f }, juce::Justification::centredRight, T.value.withAlpha (ra));
         {
             const auto c = closeRect();
             juce::Path x;
@@ -385,7 +404,7 @@ public:
             g.setColour (T.grid);    g.strokePath (grid, juce::PathStrokeType (1.0f));
             g.setColour (T.gridMaj); g.strokePath (major, juce::PathStrokeType (1.0f));
         }
-        const auto fLab = fonts.get (500, 13.0f);
+        const auto fLab = fonts.ui (500, 13.0f);
         for (float d = top; d >= bot - 0.1f; d -= step)
             text (g, fLab, fixMinus (juce::String ((int) d)), { x0 - 66.0f, sy (d) - 9.0f, 56.0f, 18.0f }, juce::Justification::centredRight, hex (0x8f8574));
         for (int d : { -6, -3, 0, 3, 6 })
@@ -403,23 +422,23 @@ public:
         if (spec.active)
         {
             g.setColour (hex (0xa89272).withAlpha (0.28f));
-            g.fillPath (specPath (spec, spec.out, 0.0f, x0, x1, y0, y1, top, bot, true));
+            g.fillPath (specPath (spec, spec.out, x0, x1, y0, y1, top, bot, true));
             g.setColour (hex (0xc8b08a));
-            g.strokePath (specPath (spec, spec.out, 0.0f, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.4f, juce::PathStrokeType::curved));
+            g.strokePath (specPath (spec, spec.out, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.4f, juce::PathStrokeType::curved));
             if (spec.inputActive)
             {
                 juce::Path dashed;
                 const float dash[] = { 4.0f, 3.0f };
-                juce::PathStrokeType (1.2f).createDashedStroke (dashed, specPath (spec, spec.in, 0.0f, x0, x1, y0, y1, top, bot, false), dash, 2);
+                juce::PathStrokeType (1.2f).createDashedStroke (dashed, specPath (spec, spec.in, x0, x1, y0, y1, top, bot, false), dash, 2);
                 g.setColour (hex (0x8e97bf));
                 g.fillPath (dashed);
             }
             g.setColour (hex (0xf1e3c6).withAlpha (0.6f));
-            g.strokePath (specPath (spec, spec.peak, 0.0f, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.0f));
+            g.strokePath (specPath (spec, spec.peak, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.0f));
             g.setColour (hex (0xf07a3a).withAlpha (0.55f));
-            g.fillPath (specPath (spec, spec.harm, harmBoostDb, x0, x1, y0, y1, top, bot, true));
+            g.fillPath (specPath (spec, spec.harm, x0, x1, y0, y1, top, bot, true));
             g.setColour (hex (0xf58a4e));
-            g.strokePath (specPath (spec, spec.harm, harmBoostDb, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.3f, juce::PathStrokeType::curved));
+            g.strokePath (specPath (spec, spec.harm, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.3f, juce::PathStrokeType::curved));
         }
         {
             const auto tp = tonePath (spec, x0, x1, y0, y1, 6.0f);
@@ -433,7 +452,7 @@ public:
         // footer
         g.setColour (T.zari.withAlpha (0.25f));
         g.fillRect (0.0f, (float) H - 48.0f, (float) W, 1.0f);
-        const auto fLeg = fonts.get (500, 14.0f);
+        const auto fLeg = fonts.ui (500, 14.0f);
         const float fy = (float) H - 24.0f;
         float lx = 18.0f;
         auto item = [&] (int kind, const juce::String& t)
@@ -447,28 +466,26 @@ public:
                 default: g.setColour (hex (0xf4eada)); g.fillRect (lx, fy - 1.0f, 14.0f, 2.0f); break;
             }
             const float tw = juce::GlyphArrangement::getStringWidth (fLeg, t);
-            text (g, fLeg, t, { lx + 21.0f, fy - 0.5f * 14.0f * lineH + 1.0f, tw + 4.0f, 14.0f * lineH }, juce::Justification::centredLeft, hex (0x9a907e));
+            text (g, fLeg, t, { lx + 21.0f, fy - 9.0f + 1.0f, tw + 4.0f, 18.0f }, juce::Justification::centredLeft, hex (0x9a907e));
             lx += 21.0f + tw + 20.0f;
         };
-        item (0, "Output"); item (1, "Input"); item (2, "Peak hold");
-        item (3, juce::String (juce::CharPointer_UTF8 ("Harmonics \xc3\x97" "16"))); item (4, "Tone");
+        item (0, "Output"); item (1, "Input"); item (2, "Peak hold"); item (3, "Harmonics"); item (4, "Tone");
 
-        const auto fBtn = fonts.get (600, 14.0f);
+        const auto fBtn = fonts.ui (600, 14.0f);
         juce::Rectangle<float> b60, b90, box;
         rangeRects (b60, b90, box);
-        text (g, fLeg, "Range", { box.getX() - 70.0f, fy - 0.5f * 14.0f * lineH + 1.0f, 60.0f, 14.0f * lineH }, juce::Justification::centredRight, T.label);
-        const auto boxPath = roundRect (box, 4.0f);
+        text (g, fLeg, "Range", { box.getX() - 70.0f, fy - 9.0f + 1.0f, 60.0f, 18.0f }, juce::Justification::centredRight, T.label);
         g.setColour (hex (0x0e0303));
-        g.fillPath (boxPath);
-        insetShadow (g, boxPath, juce::Colours::black.withAlpha (0.9f), 3.0f, { 0.0f, 1.0f });
+        g.fillRoundedRectangle (box, 4.0f);
         for (int i = 0; i < 2; ++i)
         {
             const auto r = i == 0 ? b60 : b90;
             const bool on = (i == 1) == range90;
             if (on) { g.setColour (T.label.withAlpha (0.22f)); g.fillRoundedRectangle (r, 3.0f); }
-            text (g, fBtn, i == 0 ? "60 dB" : "90 dB", r.translated (0.0f, 1.0f), juce::Justification::centred, on ? T.label : hex (0x7c7464));
+            text (g, fBtn, i == 0 ? "60 dB" : "90 dB", r.translated (0.0f, 0.5f), juce::Justification::centred, on ? T.label : hex (0x7c7464));
         }
-        innerRing (g, all, 0.0f, T.zari.withAlpha (0.4f));
+        g.setColour (T.zari.withAlpha (0.4f));
+        g.drawRect (all, 1.0f);
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -515,7 +532,7 @@ private:
     juce::Rectangle<float> closeRect() const { return { (float) W - 42.0f, 6.0f, 28.0f, 28.0f }; }
     void rangeRects (juce::Rectangle<float>& b60, juce::Rectangle<float>& b90, juce::Rectangle<float>& box) const
     {
-        const auto f = fonts.get (600, 14.0f);
+        const auto f = fonts.ui (600, 14.0f);
         const float w60 = juce::GlyphArrangement::getStringWidth (f, "60 dB") + 20.0f, w90 = juce::GlyphArrangement::getStringWidth (f, "90 dB") + 20.0f;
         const float bw = w60 + w90 + 3.0f + 6.0f, right = (float) W - 18.0f, cy = (float) H - 24.0f;
         box = { right - bw, cy - 16.0f, bw, 32.0f };
@@ -589,25 +606,33 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
     setOpaque (true);
     setLookAndFeel (&invisible);
-    struct Def { const char* id; float cx, cy, D, rr; bool bipolar, big; float gap; };
-    const Def defs[5] = {
-        { ids::pr,         134.0f, 226.0f, 98.0f, 62.0f, false, true,  4.0f },
-        { ids::input,      921.0f, 112.0f, 54.0f, 36.0f, true,  false, 2.0f },
-        { ids::output,     921.0f, 238.0f, 54.0f, 36.0f, true,  false, 2.0f },
-        { ids::mix,        921.0f, 364.0f, 54.0f, 36.0f, false, false, 2.0f },
-        { ids::noiseLevel, 921.0f, 556.0f, 40.0f, 28.0f, false, false, 2.0f } };
+
+    bg.src = loadImage ("bg_jpg");
+    faceGr.src = loadImage ("face_gr_jpg");
+    faceOut.src = loadImage ("face_out_jpg");
+    pivot.src = loadImage ("pivot_png");
+    glassMeter.src = loadImage ("glass_meter_png");
+    glassDisp.src = loadImage ("glass_disp_png");
+    faderCap.src = loadImage ("fader_cap_png");
+    lampC.src = loadImage ("lamp_c_png");
+    lampL.src = loadImage ("lamp_l_png");
+    noLogo.src = loadImage ("nologo_jpg");
+    for (int i = 0; i < 7; ++i) keyArt[(size_t) i].src = loadImage (("key_" + juce::String (i) + "_png").toRawUTF8());
 
     for (int k = 0; k < 5; ++k)
     {
         auto& kn = knobs[(size_t) k];
-        const auto& d = defs[k];
-        kn.id = d.id; kn.name = knobNames[k];
-        kn.cx = d.cx; kn.cy = d.cy; kn.D = d.D; kn.rr = d.rr; kn.bipolar = d.bipolar; kn.big = d.big; kn.labelGap = d.gap;
+        const auto& a = HW::knobs[k];
+        kn.art = k;
+        kn.id = knobIds[k];
+        kn.name = knobNames[k];
+        kn.strip.src = loadImage (a.strip);
+        kn.ring.src = loadImage (a.ring);
         kn.slider.setLookAndFeel (&invisible);
         kn.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         kn.slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         kn.slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
-        kn.slider.setMouseDragSensitivity (kn.big ? 320 : 260);
+        kn.slider.setMouseDragSensitivity (k == 0 ? 320 : 260);
         kn.slider.setVelocityBasedMode (false);
         addAndMakeVisible (kn.slider);
         kn.param = proc.apvts.getParameter (kn.id);
@@ -634,7 +659,7 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
         fader.setDoubleClickReturnValue (true, colorParam->convertFrom0to1 (colorParam->getDefaultValue()));
     fader.onValueChange = [this]
     {
-        repaintDesign (faderHit.expanded (10.0f, 14.0f));
+        repaintDesign (faderHit.expanded (16.0f, 30.0f));
         if (fader.isMouseOverOrDragging()) setReadout (5);
     };
     fader.onDragStart = [this] { if (introRunning) skipIntro(); setReadout (5); };
@@ -679,9 +704,10 @@ void AnbuEditor::resized()
     const float s = scale();
     for (auto& kn : knobs)
     {
-        const float r = (kn.rr + 8.0f) * s;
+        const auto& a = HW::knobs[kn.art];
+        const float r = (a.rr + 6.0f) * s;
         kn.slider.radius = r;
-        kn.slider.setBounds (juce::Rectangle<float> (kn.cx * s - r, kn.cy * s - r, 2 * r, 2 * r).toNearestInt());
+        kn.slider.setBounds (juce::Rectangle<float> (a.cx * s - r, a.cy * s - r, 2 * r, 2 * r).toNearestInt());
     }
     fader.setBounds ((faderHit * s).toNearestInt());
 }
@@ -698,8 +724,7 @@ float AnbuEditor::pos01 (const juce::Slider& s) const
 
 juce::Rectangle<float> AnbuEditor::knobArea (const Knob& kn) const
 {
-    const float R = kn.rr + 8.0f + 6.0f;
-    return { kn.cx - R, kn.cy - R, 2 * R, 2 * R };
+    return R (HW::knobs[kn.art].ringRect).expanded (2.0f);
 }
 
 // ============================================================================================ intro timeline
@@ -741,381 +766,138 @@ void AnbuEditor::setIntroFrame (double seconds)
 }
 
 // ============================================================================================ static layer
-void AnbuEditor::renderStatic (juce::Graphics& g)
+void AnbuEditor::drawArt (juce::Graphics& g, anbu::ui::Art& art, juce::Rectangle<float> dest, float alpha)
+{
+    if (! art.src.isValid() || alpha <= 0.0f) return;
+    const float ppu = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    const auto& img = art.at (ppu);
+    g.setOpacity (juce::jmin (1.0f, alpha));
+    g.drawImageTransformed (img, juce::AffineTransform::scale (dest.getWidth() / (float) img.getWidth(), dest.getHeight() / (float) img.getHeight())
+                                     .translated (dest.getX(), dest.getY()));
+    g.setOpacity (1.0f);
+}
+
+void AnbuEditor::renderStatic (juce::Graphics& g, float ppu)
 {
     const auto& T = theme();
-    g.fillAll (T.chassis);
-
-    // modules
-    for (const auto& m : modules)
     {
-        const juce::Rectangle<float> r (m.x, modTop, m.w, modH);
-        const auto p = roundRect (r, 4.0f);
-        shadow (g, p, juce::Colours::black.withAlpha (0.5f), 10.0f, { 0.0f, 4.0f });
-        g.setGradientFill (juce::ColourGradient::vertical (T.plateTop, r.getY(), T.plateBot, r.getBottom()));
-        g.fillPath (p);
-        innerRing (g, r, 4.0f, T.edge);
-        g.saveState();
-        g.reduceClipRegion (p);
-        g.setColour (T.hi);
-        g.fillRect (r.getX(), r.getY(), r.getWidth(), 1.0f);
-        g.restoreState();
-        g.setColour (T.zari);
-        g.drawRoundedRectangle (r.reduced (7.5f), 2.0f, 1.0f);
-        g.setColour (T.zari.withMultipliedAlpha (0.55f));
-        g.drawRoundedRectangle (r.reduced (10.5f), 1.0f, 1.0f);
-
-        // screws: plate-toned heads with a slot
-        std::vector<float> xs;
-        if (m.w > 300.0f) xs = { m.x + 36.0f, m.x + m.w - 36.0f };
-        else xs = { m.x + 0.5f * m.w };
-        for (float sx : xs)
-            for (float sy : { 36.0f, 664.0f })
-            {
-                const auto head = circle (sx, sy, 5.0f);
-                hairlineBelow (g, head, T.hi);
-                g.setColour (T.seat);
-                g.fillPath (head);
-                g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.22f), sx - 1.2f, sy - 1.8f,
-                                                         juce::Colours::white.withAlpha (0.0f), sx - 1.2f + 4.3f, sy - 1.8f, true));
-                g.fillPath (head);
-                g.saveState();
-                g.reduceClipRegion (head);
-                const float a = juce::degreesToRadians (125.0f);
-                juce::Path slot;
-                slot.addRectangle (-6.0f, -0.98f, 12.0f, 1.96f);
-                g.setColour (juce::Colours::black.withAlpha (0.55f));
-                g.fillPath (slot, juce::AffineTransform::rotation (a - juce::MathConstants<float>::halfPi).translated (sx, sy));
-                g.restoreState();
-                g.setColour (juce::Colours::black.withAlpha (0.35f));
-                g.drawEllipse (sx - 4.5f, sy - 4.5f, 9.0f, 9.0f, 1.0f);
-            }
+        const auto& img = bg.at (ppu);
+        g.drawImageTransformed (img, juce::AffineTransform::scale ((float) baseW / (float) img.getWidth(), (float) baseH / (float) img.getHeight()));
     }
+    if (staticOut) drawArt (g, faceOut, faceR);
 
-    // knobs: seat, track, body, knurl, cap (the pointer and the lit ring are dynamic)
-    for (const auto& kn : knobs)
+    // analyser screen: grid, scale, legend, expand icon (drawn on the screen, under the glass)
+    const float ym = 0.5f * (plotY0 + plotY1);
+    auto ey = [&] (float d) { return ym - d / toneRange * 0.5f * (plotY1 - plotY0); };
+    juce::Path grid, major;
+    for (int f : { 50, 200, 500, 2000, 5000 }) { const float x = xOfF (f, plotX0, plotX1); grid.startNewSubPath (x, plotY0); grid.lineTo (x, plotY1); }
+    for (int f : { 100, 1000, 10000 }) { const float x = xOfF (f, plotX0, plotX1); major.startNewSubPath (x, plotY0); major.lineTo (x, plotY1); }
+    for (float d : { 6.0f, -6.0f }) { grid.startNewSubPath (plotX0, ey (d)); grid.lineTo (plotX1, ey (d)); }
+    for (float d : { 12.0f, 0.0f, -12.0f }) { major.startNewSubPath (plotX0, ey (d)); major.lineTo (plotX1, ey (d)); }
+    major.startNewSubPath (plotX0, plotY0); major.lineTo (plotX0, plotY1);
+    major.startNewSubPath (plotX1, plotY0); major.lineTo (plotX1, plotY1);
+    g.setColour (T.grid);    g.strokePath (grid, juce::PathStrokeType (1.0f));
+    g.setColour (T.gridMaj); g.strokePath (major, juce::PathStrokeType (1.0f));
+
+    const auto fL = fonts.ui (500, 11.5f);
+    const auto lab = hex (0x9a8e7c);
+    text (g, fL, "+12", { plotX0 - 7.0f - 40.0f, ey (12.0f) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, lab);
+    text (g, fL, "0", { plotX0 - 7.0f - 40.0f, ey (0.0f) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, lab);
+    text (g, fL, minus + "12", { plotX0 - 7.0f - 40.0f, ey (-12.0f) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, lab);
+    const std::pair<int, const char*> fl[] = { { 100, "100" }, { 1000, "1k" }, { 10000, "10k" } };
+    for (auto& [f, t] : fl)
+        text (g, fL, t, { xOfF (f, plotX0, plotX1) - 22.0f, plotY1 + 5.0f, 44.0f, 16.0f }, juce::Justification::centred, lab);
+
+    const auto fG = fonts.ui (500, 11.5f);
+    const auto legCol = hex (0x8f8574);
+    const juce::String names[3] = { "Output", "Harmonics", "Tone" };
+    float x = expandR.getX() - 14.0f;
+    const float cy = expandR.getCentreY();
+    for (int i = 2; i >= 0; --i)
     {
-        const float cx = kn.cx, cy = kn.cy, D = kn.D;
-        const auto seat = circle (cx, cy, 0.5f * D + 6.0f);
-        hairlineBelow (g, seat, T.hi);
-        g.setColour (T.seat);
-        g.fillPath (seat);
-        insetShadow (g, seat, rgba (60, 25, 0, 0.55f), 4.0f, { 0.0f, 2.0f });
-
-        juce::Path arc;
-        arc.addCentredArc (cx, cy, kn.rr, kn.rr, 0.0f, juce::degreesToRadians (-135.0f), juce::degreesToRadians (135.0f), true);
-        g.setColour (T.track);
-        g.strokePath (arc, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-        const auto body = circle (cx, cy, 0.5f * D);
-        shadow (g, body, juce::Colours::black.withAlpha (0.65f), 0.18f * D, { 0.0f, 0.09f * D });
-        g.setColour (hex (0x0c0c10));
-        g.fillPath (body);
-        const float rk = 0.5f * D - 1.0f;
-        g.setColour (hex (0x121319));
-        g.fillEllipse (cx - rk, cy - rk, 2 * rk, 2 * rk);
-        {
-            juce::Path wedges;
-            for (int i = 0; i < 90; ++i)
-            {
-                const float a0 = juce::degreesToRadians (4.0f * (float) i), a1 = juce::degreesToRadians (4.0f * (float) i + 2.0f);
-                wedges.addPieSegment (cx - rk, cy - rk, 2 * rk, 2 * rk, a0, a1, 0.0f);
-            }
-            g.setColour (hex (0x262833));
-            g.fillPath (wedges);
-        }
-        const float c = 0.74f * D, cl = cx - 0.5f * c, ct = cy - 0.5f * c;
-        const auto cap = circle (cx, cy, 0.5f * c);
-        shadow (g, cap, juce::Colours::black.withAlpha (0.7f), 2.0f, { 0.0f, 1.0f });
-        {
-            juce::ColourGradient cg (hex (0x33363f), cl + 0.44f * c, ct + 0.32f * c, hex (0x15161c), cl + 0.44f * c + 0.881f * c, ct + 0.32f * c, true);
-            cg.addColour (0.5, hex (0x1f2129));
-            g.setGradientFill (cg);
-            g.fillPath (cap);
-        }
-        g.saveState();
-        g.reduceClipRegion (cap);
-        {
-            juce::Path ring;
-            ring.addRectangle (cap.getBounds().expanded (4.0f));
-            ring.addPath (cap, juce::AffineTransform::translation (0.0f, 1.0f));
-            ring.setUsingNonZeroWinding (false);
-            g.setColour (juce::Colours::white.withAlpha (0.08f));
-            g.fillPath (ring);
-        }
-        g.restoreState();
-
-        // label
-        const float R = kn.rr + 8.0f, size = kn.big ? 15.0f : 13.0f;
-        text (g, fonts.get (500, size), kn.name, { cx - 70.0f, cy + R + kn.labelGap, 140.0f, size * lineH }, juce::Justification::centred, T.label);
+        const float tw = juce::GlyphArrangement::getStringWidth (fG, names[i]);
+        x -= tw;
+        text (g, fG, names[i], { x, cy - 8.0f, tw + 2.0f, 16.0f }, juce::Justification::centredLeft, legCol);
+        x -= 6.0f + 12.0f;
+        if (i == 0) { g.setColour (hex (0xa89272).withAlpha (0.7f)); g.fillRoundedRectangle (x, cy - 4.0f, 12.0f, 8.0f, 1.0f); }
+        else if (i == 1) { g.setColour (hex (0xf07a3a)); g.fillRoundedRectangle (x, cy - 4.0f, 12.0f, 8.0f, 1.0f); }
+        else { g.setColour (hex (0xf4eada)); g.fillRect (x, cy - 1.0f, 12.0f, 2.0f); }
+        x -= 14.0f;
     }
-
-    // Color fader: slot, ticks, numbers, label
-    {
-        const juce::Rectangle<float> slotR (faderX - 3.0f, faderY0 - 8.0f, 6.0f, faderY1 - faderY0 + 16.0f);
-        const auto slot = roundRect (slotR, 3.0f);
-        hairlineBelow (g, slot, T.hi);
-        g.setColour (T.slot);
-        g.fillPath (slot);
-        insetShadow (g, slot, juce::Colours::black.withAlpha (0.9f), 3.0f, { 0.0f, 2.0f });
-        const auto fNum = fonts.get (500, 12.0f);
-        for (int i = 0; i <= 10; ++i)
-        {
-            const float y = faderY1 - (faderY1 - faderY0) * (float) i / 10.0f;
-            const bool maj = i % 5 == 0;
-            g.setColour (T.label.withAlpha (maj ? 0.8f : 0.45f));
-            g.fillRect (faderX + 28.0f, y - 0.5f, maj ? 12.0f : 7.0f, 1.0f);
-            if (maj)
-                text (g, fNum, juce::String (i * 10), { faderX + 46.0f, y - 9.0f, 40.0f, 12.0f * lineH }, juce::Justification::centredLeft, T.dim);
-        }
-        text (g, fonts.get (500, 15.0f), "Color", { faderX - 70.0f, 548.0f, 140.0f, 15.0f * lineH }, juce::Justification::centred, T.label);
-    }
-
-    // mode button
-    {
-        const auto rec = circle (modeBtnX, modeBtnY, 19.0f);
-        g.setColour (T.recess);
-        g.fillPath (rec);
-        const auto btn = circle (modeBtnX, modeBtnY, 14.0f);
-        shadow (g, btn, juce::Colours::black.withAlpha (0.6f), 6.0f, { 0.0f, 3.0f });
-        g.setGradientFill (juce::ColourGradient (hex (0x343742), modeBtnX - 14.0f + 0.44f * 28.0f, modeBtnY - 14.0f + 0.34f * 28.0f,
-                                                 hex (0x191b22), modeBtnX - 14.0f + 0.44f * 28.0f + 0.72f * 21.6f, modeBtnY - 14.0f + 0.34f * 28.0f, true));
-        g.fillPath (btn);
-        g.saveState();
-        g.reduceClipRegion (btn);
-        juce::Path ring;
-        ring.addRectangle (btn.getBounds().expanded (4.0f));
-        ring.addPath (btn, juce::AffineTransform::translation (0.0f, 1.0f));
-        ring.setUsingNonZeroWinding (false);
-        g.setColour (juce::Colours::white.withAlpha (0.09f));
-        g.fillPath (ring);
-        g.restoreState();
-    }
-
-    // meter: bezel, face, scale
-    {
-        const auto bez = roundRect (bezelR, 6.0f);
-        hairlineBelow (g, bez, T.hi);
-        g.setColour (T.slot);
-        g.fillPath (bez);
-        insetShadow (g, bez, juce::Colours::black.withAlpha (0.9f), 8.0f, { 0.0f, 3.0f });
-        innerRing (g, bezelR, 6.0f, T.screenEdge);
-
-        const auto face = roundRect (faceR, 3.0f);
-        g.saveState();
-        g.reduceClipRegion (face);
-        {
-            const float cx = faceR.getCentreX(), cy = faceR.getBottom(), rx = 0.7f * faceR.getWidth(), ry = 0.85f * faceR.getHeight();
-            g.addTransform (juce::AffineTransform::scale (1.0f, ry / rx, cx, cy));
-            juce::ColourGradient cg (hex (0x2c1a12), cx, cy, hex (0x110905), cx + rx, cy, true);
-            cg.addColour (0.6, hex (0x1a0f09));
-            g.setGradientFill (cg);
-            g.fillRect (juce::Rectangle<float> (cx - 2 * rx, cy - 2 * rx, 4 * rx, 4 * rx));
-        }
-        g.restoreState();
-
-        const auto ink = hex (0xe6dcc8);
-        g.saveState();
-        g.reduceClipRegion (face);
-        juce::Path arc, ticks, minor;
-        arc.addCentredArc (pivX, pivY, meterR, meterR, 0.0f, -meterSpan, meterSpan, true);
-        auto seg = [] (juce::Path& p, float a, float r0, float r1)
-        {
-            const auto p0 = meterPt (r0, a), p1 = meterPt (r1, a);
-            p.startNewSubPath (p0); p.lineTo (p1);
-        };
-        std::vector<std::pair<float, juce::String>> labels;
-        if (! staticOut)
-        {
-            for (int d = 0; d <= 20; ++d)
-            {
-                const float a = fracAngle ((float) d / 20.0f);
-                if (d % 4 == 0) seg (ticks, a, meterR - 14.0f, meterR); else seg (minor, a, meterR - 7.0f, meterR);
-            }
-            for (int d : { 0, 4, 8, 12, 16, 20 }) labels.push_back ({ fracAngle ((float) d / 20.0f), juce::String (d) });
-        }
-        else
-        {
-            for (float d : { -20.0f, -10.0f, -7.0f, -5.0f, -3.0f, -2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f }) seg (ticks, fracAngle (vuFrac (d)), meterR - 14.0f, meterR);
-            for (float d : { -15.0f, -6.0f, -4.0f, -0.5f, 0.5f, 1.5f, 2.5f }) seg (minor, fracAngle (vuFrac (d)), meterR - 7.0f, meterR);
-            for (int d : { -20, -10, -5, -3, 0, 3 })
-                labels.push_back ({ fracAngle (vuFrac ((float) d)), d > 0 ? "+" + juce::String (d) : fixMinus (juce::String (d)) });
-        }
-        g.setColour (ink.withAlpha (0.9f)); g.strokePath (arc, juce::PathStrokeType (1.2f));
-        g.setColour (ink);                  g.strokePath (ticks, juce::PathStrokeType (1.5f));
-        g.setColour (ink.withAlpha (0.7f)); g.strokePath (minor, juce::PathStrokeType (1.0f));
-        const auto fM = fonts.get (600, 17.0f);
-        for (auto& [a, t] : labels)
-        {
-            const auto p = meterPt (meterR + 18.0f, a);
-            text (g, fM, t, { p.x - 24.0f, p.y - 12.0f, 48.0f, 24.0f }, juce::Justification::centred, ink);
-        }
-        const auto fC = fonts.get (500, 13.0f);
-        text (g, fC, staticOut ? "Output" : "Gain reduction", { faceR.getX() + 28.0f, faceR.getY() + 198.0f, 200.0f, 13.0f * lineH },
-              juce::Justification::centredLeft, hex (0xa58f6b));
-        text (g, fC, "dB", { faceR.getRight() - 28.0f - 60.0f, faceR.getY() + 198.0f, 60.0f, 13.0f * lineH }, juce::Justification::centredRight, hex (0xa58f6b));
-        g.restoreState();
-    }
-
-    // display: screen, grid, labels, legend, expand icon
-    {
-        const auto box = roundRect (dispR, 6.0f);
-        hairlineBelow (g, box, T.hi);
-        g.setColour (T.screen);
-        g.fillPath (box);
-        insetShadow (g, box, juce::Colours::black.withAlpha (0.9f), 10.0f, { 0.0f, 3.0f });
-        innerRing (g, dispR, 6.0f, T.screenEdge);
-
-        const float ym = 0.5f * (plotY0 + plotY1);
-        auto ey = [&] (float d) { return ym - d / toneRange * 0.5f * (plotY1 - plotY0); };
-        juce::Path grid, major;
-        for (int f : { 50, 200, 500, 2000, 5000 }) { const float x = xOfF (f, plotX0, plotX1); grid.startNewSubPath (x, plotY0); grid.lineTo (x, plotY1); }
-        for (int f : { 100, 1000, 10000 }) { const float x = xOfF (f, plotX0, plotX1); major.startNewSubPath (x, plotY0); major.lineTo (x, plotY1); }
-        for (float d : { 6.0f, -6.0f }) { grid.startNewSubPath (plotX0, ey (d)); grid.lineTo (plotX1, ey (d)); }
-        for (float d : { 12.0f, 0.0f, -12.0f }) { major.startNewSubPath (plotX0, ey (d)); major.lineTo (plotX1, ey (d)); }
-        major.startNewSubPath (plotX0, plotY0); major.lineTo (plotX0, plotY1);
-        major.startNewSubPath (plotX1, plotY0); major.lineTo (plotX1, plotY1);
-        g.setColour (T.grid);    g.strokePath (grid, juce::PathStrokeType (1.0f));
-        g.setColour (T.gridMaj); g.strokePath (major, juce::PathStrokeType (1.0f));
-
-        const auto fL = fonts.get (500, 12.0f);
-        const auto lab = hex (0x9a8e7c);
-        text (g, fL, "+12", { plotX0 - 7.0f - 44.0f, ey (12.0f) - 9.0f, 44.0f, 18.0f }, juce::Justification::centredRight, lab);
-        text (g, fL, "0", { plotX0 - 7.0f - 44.0f, ey (0.0f) - 9.0f, 44.0f, 18.0f }, juce::Justification::centredRight, lab);
-        text (g, fL, minus + "12", { plotX0 - 7.0f - 44.0f, ey (-12.0f) - 9.0f, 44.0f, 18.0f }, juce::Justification::centredRight, lab);
-        const std::pair<int, const char*> fl[] = { { 100, "100" }, { 1000, "1k" }, { 10000, "10k" } };
-        for (auto& [f, t] : fl)
-            text (g, fL, t, { xOfF (f, plotX0, plotX1) - 22.0f, plotY1 + 5.0f, 44.0f, 18.0f }, juce::Justification::centred, lab);
-
-        // legend, right-aligned before the expand button
-        const auto fG = fonts.get (500, 12.0f);
-        const auto legCol = hex (0x8f8574);
-        const juce::String names[3] = { "Output", "Harmonics", "Tone" };
-        float x = expandR.getX() - 16.0f;
-        const float cy = expandR.getCentreY();
-        for (int i = 2; i >= 0; --i)
-        {
-            const float tw = juce::GlyphArrangement::getStringWidth (fG, names[i]);
-            x -= tw;
-            text (g, fG, names[i], { x, cy - 0.5f * 12.0f * lineH + 1.0f, tw + 2.0f, 12.0f * lineH }, juce::Justification::centredLeft, legCol);
-            x -= 6.0f + 12.0f;
-            if (i == 0) { g.setColour (hex (0xa89272).withAlpha (0.7f)); g.fillRoundedRectangle (x, cy - 4.0f, 12.0f, 8.0f, 1.0f); }
-            else if (i == 1) { g.setColour (hex (0xf07a3a)); g.fillRoundedRectangle (x, cy - 4.0f, 12.0f, 8.0f, 1.0f); }
-            else { g.setColour (hex (0xf4eada)); g.fillRect (x, cy - 1.0f, 12.0f, 2.0f); }
-            x -= 14.0f;
-        }
-        drawExpandIcon (g, expandR.getX() + 6.0f, expandR.getY() + 5.0f, hex (0xb89a6c));
-    }
-
-    // key banks and captions
-    {
-        const auto fC = fonts.get (500, 13.0f);
-        text (g, fC, "Oversampling", { bankOs.getX(), 560.0f, bankOs.getWidth(), 13.0f * lineH }, juce::Justification::centredLeft, T.label);
-        text (g, fC, "Phase", { bankPh.getX(), 560.0f, bankPh.getWidth(), 13.0f * lineH }, juce::Justification::centredLeft, T.label);
-        for (auto r : { bankOs, bankPh })
-        {
-            const auto p = roundRect (r, 5.0f);
-            hairlineBelow (g, p, T.hi);
-            g.setColour (T.recess);
-            g.fillPath (p);
-            insetShadow (g, p, rgba (60, 20, 0, 0.55f), 4.0f, { 0.0f, 2.0f });
-        }
-        g.setColour (rgba (246, 210, 131, 0.2f));
-        g.fillRect (884.0f, 444.0f, 74.0f, 1.0f);
-    }
+    drawExpandIcon (g, expandR.getX() + 4.0f, expandR.getY() + 4.0f, hex (0xb89a6c));
 }
 
 // ============================================================================================ dynamic parts
-void AnbuEditor::drawLogo (juce::Graphics& g)
+void AnbuEditor::drawKnob (juce::Graphics& g, Knob& kn, float pos, float flash)
 {
-    debossText (g, fonts.get (800, 44.0f), logoWord, logoWordR, juce::Justification::centred);
-    debossText (g, fonts.get (600, 13.0f), "by R4N", logoByR, juce::Justification::centred);
-}
+    const auto& a = HW::knobs[kn.art];
+    const float cx = a.cx, cy = a.cy;
+    // lamp ring: the lit render, revealed along the value arc (dark at the knob's zero; bipolar knobs from 0 dB)
+    auto litArc = [&] (float d0, float d1, float alpha)
+    {
+        const float lo = juce::jmin (d0, d1), hi = juce::jmax (d0, d1);
+        if (hi - lo < 0.5f || alpha <= 0.0f) return;
+        const float soft = juce::jmin (4.0f, hi - lo);
+        const float big = (float) a.ringRect.w;
+        auto wedge = [&] (float w0, float w1, float al)
+        {
+            if (w1 <= w0) return;
+            juce::Path p;
+            p.addPieSegment (cx - big, cy - big, 2 * big, 2 * big, juce::degreesToRadians (w0), juce::degreesToRadians (w1), 0.0f);
+            g.saveState();
+            g.reduceClipRegion (p);
+            drawArt (g, kn.ring, R (a.ringRect), al);
+            g.restoreState();
+        };
+        wedge (lo + 0.5f * soft, hi - 0.5f * soft, alpha);
+        for (int j = 0; j < 4; ++j)
+        {
+            const float f = ((float) j + 0.5f) / 4.0f;
+            wedge (lo - 0.5f * soft + soft * (float) j / 4.0f, lo - 0.5f * soft + soft * (float) (j + 1) / 4.0f, alpha * f);
+            wedge (hi + 0.5f * soft - soft * (float) (j + 1) / 4.0f, hi + 0.5f * soft - soft * (float) j / 4.0f, alpha * f);
+        }
+    };
+    const float a0 = a.bipolar ? 0.0f : -135.0f, a1 = -135.0f + 270.0f * pos;
+    litArc (a0, a1, 1.0f);
+    if (flash > 0.0f) litArc (-135.0f, 135.0f, flash);
 
-void AnbuEditor::drawKnobDynamic (juce::Graphics& g, const Knob& kn, float pos, float flash)
-{
-    const auto& T = theme();
-    const float cx = kn.cx, cy = kn.cy, D = kn.D;
-    // lit ring: dark at the knob's zero; bipolar knobs light from the centre (0 dB) outwards
-    const float a0 = kn.bipolar ? 0.0f : -135.0f, a1 = -135.0f + 270.0f * pos;
-    if (std::abs (a1 - a0) > 0.5f)
+    // knob: frame of the rendered filmstrip, clipped to the knob's round silhouette
+    if (kn.strip.src.isValid())
     {
-        juce::Path arc;
-        arc.addCentredArc (cx, cy, kn.rr, kn.rr, 0.0f, juce::degreesToRadians (juce::jmin (a0, a1)), juce::degreesToRadians (juce::jmax (a0, a1)), true);
-        strokeGlow (g, arc, T.lamp, 2.4f, 1.0f);
+        const int n = a.frames;
+        const int f = juce::jlimit (0, n - 1, juce::roundToInt (pos * (float) (n - 1)));
+        const float ppu = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
+        const auto& img = kn.strip.at (ppu);
+        const float fh = (float) img.getHeight() / (float) n;
+        const auto dest = R (a.sprite);
+        g.saveState();
+        juce::Path c;
+        c.addEllipse (cx - a.radius - 0.5f, cy - a.radius - 0.5f, 2 * a.radius + 1.0f, 2 * a.radius + 1.0f);
+        g.reduceClipRegion (c);
+        const float sx = dest.getWidth() / (float) img.getWidth(), sy = dest.getHeight() / fh;
+        g.drawImageTransformed (img, juce::AffineTransform::translation (0.0f, -fh * (float) f).scaled (sx, sy).translated (dest.getX(), dest.getY()));
+        g.restoreState();
     }
-    if (flash > 0.0f)
-    {
-        juce::Path arc;
-        arc.addCentredArc (cx, cy, kn.rr, kn.rr, 0.0f, juce::degreesToRadians (-135.0f), juce::degreesToRadians (135.0f), true);
-        strokeGlow (g, arc, T.lamp, 2.4f, flash);
-    }
-    // pointer
-    juce::Path ptr;
-    ptr.addRoundedRectangle (-1.5f, -0.34f * D, 3.0f, 0.22f * D, 1.5f);
-    g.setColour (hex (0xe9d9b8));
-    g.fillPath (ptr, juce::AffineTransform::rotation (juce::degreesToRadians (-135.0f + 270.0f * pos)).translated (cx, cy));
 }
 
 void AnbuEditor::drawFaderCap (juce::Graphics& g, float pos)
 {
     const float yc = faderY1 - (faderY1 - faderY0) * pos;
-    const juce::Rectangle<float> r (faderX - 22.0f, yc - 16.0f, 44.0f, 32.0f);
-    const auto p = roundRect (r, 4.0f);
-    shadow (g, p, juce::Colours::black.withAlpha (0.6f), 12.0f, { 0.0f, 7.0f });
-    juce::ColourGradient cg (hex (0x2e313b), 0.0f, r.getY(), hex (0x1b1d24), 0.0f, r.getBottom(), false);
-    cg.addColour (0.46, hex (0x1d1f27));
-    cg.addColour (0.54, hex (0x121319));
-    g.setGradientFill (cg);
-    g.fillPath (p);
-    g.saveState();
-    g.reduceClipRegion (p);
-    g.setColour (juce::Colours::white.withAlpha (0.1f));
-    g.fillRect (r.getX(), r.getY(), r.getWidth(), 1.0f);
-    g.restoreState();
-    g.setColour (hex (0xe9d9b8));
-    g.fillRoundedRectangle (faderX - 15.0f, yc - 1.0f, 30.0f, 2.0f, 1.0f);
+    drawArt (g, faderCap, R (HW::faderCap).translated (0.0f, yc - HW::faderRefY));
 }
 
 void AnbuEditor::drawModeLamps (juce::Graphics& g, float flash)
 {
-    const auto& T = theme();
     float onAlpha = 1.0f;
     if (introRunning) onAlpha = lerp (0.35f, 1.0f, easeOut (((float) introT() - 1.762f) / 0.6f));
-    for (int i = 0; i < 2; ++i)
-    {
-        const float y = i == 0 ? lampYC : lampYL;
-        const bool on = (i == 1) == modeLimit;
-        const auto dot = circle (lampX, y, 4.5f);
-        if (on)
-        {
-            g.setColour (T.lampOff);
-            g.fillPath (dot);
-            shadow (g, dot, T.glow.withMultipliedAlpha (onAlpha), 10.0f, {});
-            shadow (g, dot, T.lamp.withMultipliedAlpha (onAlpha), 4.0f, {});
-            g.setColour (T.lamp.withAlpha (onAlpha));
-            g.fillPath (dot);
-        }
-        else
-        {
-            g.setColour (T.lampOff);
-            g.fillPath (dot);
-            insetShadow (g, dot, rgba (60, 20, 0, 0.6f), 2.0f, { 0.0f, 1.0f });
-        }
-        if (flash > 0.0f)
-        {
-            shadow (g, dot, T.lamp.withAlpha (flash), 6.0f, {});
-            g.setColour (T.lamp.withAlpha (flash));
-            g.fillPath (dot);
-        }
-        text (g, fonts.get (on ? 600 : 500, 15.0f), i == 0 ? "Compress" : "Limit", { 71.0f, y - 0.5f * 15.0f * lineH + 1.0f, 110.0f, 15.0f * lineH },
-              juce::Justification::centredLeft, on ? T.value : T.dim);
-    }
+    drawArt (g, lampC, R (HW::lampC), juce::jmax (modeLimit ? 0.0f : onAlpha, flash));
+    drawArt (g, lampL, R (HW::lampL), juce::jmax (modeLimit ? onAlpha : 0.0f, flash));
 }
 
 float AnbuEditor::meterFrac() const
 {
-    return proc.uiMeterOut ? juce::jlimit (-0.04f, 1.06f, vuFrac (vuDb)) : juce::jlimit (0.0f, 1.04f, grDb / 20.0f);
+    // fraction of the scale from the left end. GR reads right to left: no reduction rests at the right.
+    return proc.uiMeterOut ? juce::jlimit (-0.04f, 1.06f, vuFrac (vuDb)) : 1.0f - juce::jlimit (0.0f, 1.04f, grDb / 20.0f);
 }
 
 void AnbuEditor::drawMeterDynamic (juce::Graphics& g)
@@ -1123,58 +905,29 @@ void AnbuEditor::drawMeterDynamic (juce::Graphics& g)
     float f = needlePos;
     if (introRunning)
     {
+        // the needle swings across the scale and settles: from its rest end to the far end and back
+        const float rest = proc.uiMeterOut ? 0.0f : 1.0f, far = 1.0f - rest;
         const float u = ((float) introT() - 0.95f) / 1.1f;
-        if (u <= 0.0f) f = 0.0f;
-        else if (u < 0.45f) f = bezier (0.3f, 0.6f, 0.3f, 1.0f, u / 0.45f);
-        else if (u < 1.0f) f = lerp (1.0f, needlePos, bezier (0.3f, 0.6f, 0.3f, 1.0f, (u - 0.45f) / 0.55f));
+        if (u <= 0.0f) f = rest;
+        else if (u < 0.45f) f = lerp (rest, far, bezier (0.3f, 0.6f, 0.3f, 1.0f, u / 0.45f));
+        else if (u < 1.0f) f = lerp (far, needlePos, bezier (0.3f, 0.6f, 0.3f, 1.0f, (u - 0.45f) / 0.55f));
     }
     const float a = fracAngle (juce::jlimit (-0.06f, 1.08f, f));
-    const auto face = roundRect (faceR, 3.0f);
     g.saveState();
-    g.reduceClipRegion (face);
+    g.reduceClipRegion (roundRect (faceR, 3.0f));
     const auto rot = juce::AffineTransform::rotation (a, pivX, pivY);
-    juce::Path sh, nd;
-    sh.startNewSubPath (pivX + 4.0f, pivY + 5.0f); sh.lineTo (pivX + 4.0f, faceR.getY() + 63.0f);
+    juce::Path nd;
     nd.startNewSubPath (pivX, pivY); nd.lineTo (pivX, faceR.getY() + 66.0f);
-    g.setColour (juce::Colours::black.withAlpha (0.55f));
-    g.strokePath (sh, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), rot);
+    // soft shadow on the face, then the needle
+    g.setColour (juce::Colours::black.withAlpha (0.16f));
+    g.strokePath (nd, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), rot.translated (4.0f, 5.0f));
+    g.setColour (juce::Colours::black.withAlpha (0.28f));
+    g.strokePath (nd, juce::PathStrokeType (2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), rot.translated (3.0f, 4.0f));
     g.setColour (hex (0xf3e8d2));
-    g.strokePath (nd, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), rot);
-    g.setColour (hex (0x0a0604));
-    g.fillEllipse (pivX - 74.0f, pivY - 74.0f, 148.0f, 148.0f);
-    g.setColour (rgba (230, 220, 200, 0.08f));
-    g.drawEllipse (pivX - 74.0f, pivY - 74.0f, 148.0f, 148.0f, 1.0f);
-    // glass
-    {
-        const float rad = juce::degreesToRadians (172.0f);
-        const auto c = faceR.getCentre();
-        const float half = 0.5f * (std::abs (faceR.getWidth() * std::sin (rad)) + std::abs (faceR.getHeight() * std::cos (rad)));
-        const juce::Point<float> dir (std::sin (rad), -std::cos (rad));
-        const auto p0 = c - dir * half, p1 = c + dir * half;
-        juce::ColourGradient lg (juce::Colours::white.withAlpha (0.07f), p0.x, p0.y, juce::Colours::white.withAlpha (0.0f), p1.x, p1.y, false);
-        lg.clearColours();
-        lg.addColour (0.0, juce::Colours::white.withAlpha (0.07f));
-        lg.addColour (0.3, juce::Colours::white.withAlpha (0.0f));
-        lg.addColour (1.0, juce::Colours::white.withAlpha (0.0f));
-        g.setGradientFill (lg);
-        g.fillRect (faceR);
-        g.saveState();
-        const float rx = 0.6f * faceR.getWidth(), ry = 0.4f * faceR.getHeight();
-        g.addTransform (juce::AffineTransform::scale (1.0f, ry / rx, c.x, faceR.getY()));
-        g.setGradientFill (juce::ColourGradient (rgba (255, 190, 110, 0.06f), c.x, faceR.getY(), rgba (255, 190, 110, 0.0f), c.x + rx * 0.7f, faceR.getY(), true));
-        g.fillRect (juce::Rectangle<float> (c.x - rx, faceR.getY() - rx, 2 * rx, 2 * rx));
-        g.restoreState();
-    }
-    // GR / Out pills
-    const auto fP = fonts.get (600, 13.0f);
-    for (int i = 0; i < 2; ++i)
-    {
-        const auto r = i == 0 ? pillGR : pillOut;
-        const bool on = (i == 1) == proc.uiMeterOut;
-        if (on) { g.setColour (rgba (201, 168, 119, 0.16f)); g.fillRoundedRectangle (r, 3.0f); }
-        text (g, fP, i == 0 ? "GR" : "Out", r.translated (0.0f, 1.0f), juce::Justification::centred, on ? hex (0xf1e3c6) : hex (0x7c7464));
-    }
+    g.strokePath (nd, juce::PathStrokeType (1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), rot);
     g.restoreState();
+    drawArt (g, pivot, R (HW::pivot));
+    drawArt (g, glassMeter, faceR);
 }
 
 juce::String AnbuEditor::readoutText() const
@@ -1187,20 +940,20 @@ juce::String AnbuEditor::readoutText() const
 void AnbuEditor::drawDisplayDynamic (juce::Graphics& g)
 {
     if (readoutKnob >= 0 && readoutAlpha > 0.0f)
-        text (g, fonts.get (600, 14.0f), readoutText(), { 294.0f, 324.0f, 300.0f, 24.0f }, juce::Justification::centredLeft, hex (0xf1e3c6).withAlpha (readoutAlpha));
+        text (g, fonts.ui (600, 14.0f), readoutText(), readoutR, juce::Justification::centredLeft, hex (0xf1e3c6).withAlpha (readoutAlpha));
 
     g.saveState();
     g.reduceClipRegion (juce::Rectangle<float> (plotX0, plotY0, plotX1 - plotX0, plotY1 - plotY0).toNearestInt());
     if (spec.active)
     {
         g.setColour (hex (0xa89272).withAlpha (0.3f));
-        g.fillPath (specPath (spec, spec.out, 0.0f, plotX0, plotX1, plotY0, plotY1, specTop, specBot, true));
+        g.fillPath (specPath (spec, spec.out, plotX0, plotX1, plotY0, plotY1, specTop, specBot, true));
         g.setColour (hex (0xc8b08a));
-        g.strokePath (specPath (spec, spec.out, 0.0f, plotX0, plotX1, plotY0, plotY1, specTop, specBot, false), juce::PathStrokeType (1.3f, juce::PathStrokeType::curved));
+        g.strokePath (specPath (spec, spec.out, plotX0, plotX1, plotY0, plotY1, specTop, specBot, false), juce::PathStrokeType (1.3f, juce::PathStrokeType::curved));
         g.setColour (hex (0xf07a3a).withAlpha (0.55f));
-        g.fillPath (specPath (spec, spec.harm, harmBoostDb, plotX0, plotX1, plotY0, plotY1, specTop, specBot, true));
+        g.fillPath (specPath (spec, spec.harm, plotX0, plotX1, plotY0, plotY1, specTop, specBot, true));
         g.setColour (hex (0xf58a4e));
-        g.strokePath (specPath (spec, spec.harm, harmBoostDb, plotX0, plotX1, plotY0, plotY1, specTop, specBot, false), juce::PathStrokeType (1.2f, juce::PathStrokeType::curved));
+        g.strokePath (specPath (spec, spec.harm, plotX0, plotX1, plotY0, plotY1, specTop, specBot, false), juce::PathStrokeType (1.2f, juce::PathStrokeType::curved));
     }
     const auto tp = tonePath (spec, plotX0, plotX1, plotY0, plotY1, toneRange);
     g.setColour (hex (0xf4eada).withAlpha (0.16f));
@@ -1208,56 +961,32 @@ void AnbuEditor::drawDisplayDynamic (juce::Graphics& g)
     g.setColour (hex (0xf4eada));
     g.strokePath (tp, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     g.restoreState();
-}
-
-void AnbuEditor::drawKey (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& t, bool active, float flash, float size)
-{
-    const auto& T = theme();
-    const auto p = roundRect (r, 3.0f);
-    if (active)
-    {
-        g.setGradientFill (juce::ColourGradient::vertical (T.keyDn0, r.getY(), T.keyDn1, r.getBottom()));
-        g.fillPath (p);
-        insetShadow (g, p, rgba (60, 20, 0, 0.55f), 3.0f, { 0.0f, 2.0f });
-    }
-    else
-    {
-        shadow (g, p, rgba (60, 20, 0, 0.45f), 3.0f, { 0.0f, 2.0f });
-        g.setGradientFill (juce::ColourGradient::vertical (T.keyUp0, r.getY(), T.keyUp1, r.getBottom()));
-        g.fillPath (p);
-        g.saveState();
-        g.reduceClipRegion (p);
-        g.setColour (T.hi);
-        g.fillRect (r.getX(), r.getY(), r.getWidth(), 1.0f);
-        g.restoreState();
-    }
-    const auto f = fonts.get (active ? 700 : 600, size);
-    const auto tr = r.translated (0.0f, 1.0f);
-    if (active)
-        shadow (g, textPath (f, t, tr, juce::Justification::centred), T.glow, 8.0f, {});
-    text (g, f, t, tr, juce::Justification::centred, active ? T.keyOn : T.dim);
-    if (flash > 0.0f)
-    {
-        g.saveState();
-        g.reduceClipRegion (p);
-        juce::Path ring;
-        ring.addRectangle (r.expanded (20.0f));
-        ring.addPath (p);
-        ring.setUsingNonZeroWinding (false);
-        shadow (g, ring, T.glow.withMultipliedAlpha (flash), 12.0f, {});
-        g.restoreState();
-        g.setColour (T.lamp.withAlpha (flash));
-        g.drawRoundedRectangle (r.reduced (0.5f), 2.5f, 1.0f);
-    }
+    drawArt (g, glassDisp, screenR);
 }
 
 void AnbuEditor::drawKeys (juce::Graphics& g)
 {
+    const auto& T = theme();
     for (int i = 0; i < 7; ++i)
     {
         const auto r = keyRect (i);
-        if (! g.clipRegionIntersects (r.expanded (6.0f).getSmallestIntegerContainer())) continue;
-        drawKey (g, r, juce::String (juce::CharPointer_UTF8 (keyText[i])), keyState[(size_t) i], flashAt (keyFlashX (i)), 14.0f);
+        if (! g.clipRegionIntersects (r.expanded (8.0f).getSmallestIntegerContainer())) continue;
+        if (keyState[(size_t) i]) drawArt (g, keyArt[(size_t) i], R (HW::keys[i]));
+        const float flash = flashAt (keyFlashX (i));
+        if (flash > 0.0f)
+        {
+            const auto p = roundRect (r, 3.0f);
+            g.saveState();
+            g.reduceClipRegion (p);
+            juce::Path ring;
+            ring.addRectangle (r.expanded (20.0f));
+            ring.addPath (p);
+            ring.setUsingNonZeroWinding (false);
+            shadow (g, ring, T.glow.withMultipliedAlpha (flash), 12.0f, {});
+            g.restoreState();
+            g.setColour (T.lamp.withAlpha (flash));
+            g.drawRoundedRectangle (r.reduced (0.5f), 2.5f, 1.0f);
+        }
     }
 }
 
@@ -1265,6 +994,10 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
 {
     const auto& T = theme();
     const float t = (float) introT();
+    const float deb = easeIn ((t - 1.0f) / 0.65f);
+
+    // the plate's own (debossed) logo appears as the travelling logo lands on it
+    drawArt (g, noLogo, R (HW::logoPatch), 1.0f - deb);
 
     // panel hidden behind the chassis colour until the logo leaves the centre
     float ov = 1.0f;
@@ -1276,7 +1009,7 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
     }
 
     // அ ignites like a lamp, the rest of the word grows out of it, then it shrinks to its place and debosses
-    const auto font = fonts.get (800, 44.0f);
+    const auto font = fonts.logo (800, 44.0f);
     const float wA = juce::GlyphArrangement::getStringWidth (font, logoA);
     const float wRest = juce::GlyphArrangement::getStringWidth (font, logoRest);
     float ignite = 1.0f;
@@ -1291,10 +1024,10 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
     const float grow = easeOut ((t - 0.6f) / 0.38f);
     const float reveal = juce::jmin (wRest, 132.0f * grow);
     const float move = bezier (0.65f, 0.0f, 0.25f, 1.0f, (t - 0.95f) / 0.65f);
-    const float deb = easeIn ((t - 1.0f) / 0.65f);
     const float cx = logoWordR.getCentreX() + 366.0f * (1.0f - move);
     const float cy = logoWordR.getCentreY() + 274.0f * (1.0f - move);
     const float sc = 2.2f - 1.2f * move;
+    const float fade = 1.0f - deb;          // hands over to the rendered deboss
 
     const float total = wA + reveal;
     const float left = cx - 0.5f * total;
@@ -1315,13 +1048,9 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
     const auto lit = T.logoLit.interpolatedWith (T.deboss, deb);
     auto drawPart = [&] (const juce::Path& p, float alpha)
     {
+        alpha *= fade;
         if (alpha <= 0.0f) return;
-        if (deb < 0.999f) shadow (g, p, T.glow.withMultipliedAlpha (alpha * (1.0f - deb)), 16.0f * (1.0f - deb) + 0.5f, {});
-        if (deb > 0.0f)
-        {
-            g.setColour (T.debHi.withMultipliedAlpha (alpha * deb)); g.fillPath (p, juce::AffineTransform::translation (0.0f, 1.0f));
-            g.setColour (T.debLo.withMultipliedAlpha (alpha * deb)); g.fillPath (p, juce::AffineTransform::translation (0.0f, -1.0f));
-        }
+        shadow (g, p, T.glow.withMultipliedAlpha (alpha), 16.0f * (1.0f - deb) + 0.5f, {});
         g.setColour (lit.withMultipliedAlpha (alpha));
         g.fillPath (p);
     };
@@ -1336,18 +1065,9 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
     g.restoreState();
 
     // "by R4N"
-    const float by = easeOut ((t - 0.95f) / 0.4f);
+    const float by = easeOut ((t - 0.95f) / 0.4f) * fade;
     if (by > 0.0f)
-    {
-        const auto fb = fonts.get (600, 13.0f);
-        const auto r = logoByR.translated (0.0f, 4.0f * (1.0f - by));
-        if (deb > 0.0f)
-        {
-            text (g, fb, "by R4N", r.translated (0.0f, 1.0f), juce::Justification::centred, T.debHi.withMultipliedAlpha (by * deb));
-            text (g, fb, "by R4N", r.translated (0.0f, -1.0f), juce::Justification::centred, T.debLo.withMultipliedAlpha (by * deb));
-        }
-        text (g, fb, "by R4N", r, juce::Justification::centred, lit.withMultipliedAlpha (by));
-    }
+        text (g, fonts.logo (600, 13.0f), "by R4N", logoByR.translated (0.0f, 4.0f * (1.0f - by)), juce::Justification::centred, lit.withMultipliedAlpha (by));
 }
 
 // ============================================================================================ paint
@@ -1362,30 +1082,28 @@ void AnbuEditor::paint (juce::Graphics& g)
         staticLayer = juce::Image (juce::Image::ARGB, juce::roundToInt ((float) baseW * phys), juce::roundToInt ((float) baseH * phys), true);
         juce::Graphics gs (staticLayer);
         gs.addTransform (juce::AffineTransform::scale (phys));
-        renderStatic (gs);
+        gs.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        renderStatic (gs, phys);
     }
     g.addTransform (juce::AffineTransform::scale (s));
-    g.setImageResamplingQuality (juce::Graphics::mediumResamplingQuality);
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
     g.drawImageTransformed (staticLayer, juce::AffineTransform::scale ((float) baseW / (float) staticLayer.getWidth(),
                                                                        (float) baseH / (float) staticLayer.getHeight()));
 
-    if (! introRunning && g.clipRegionIntersects (logoWordR.getUnion (logoByR).expanded (4.0f).getSmallestIntegerContainer()))
-        drawLogo (g);
-
-    for (const auto& kn : knobs)
+    for (auto& kn : knobs)
         if (g.clipRegionIntersects (knobArea (kn).getSmallestIntegerContainer()))
-            drawKnobDynamic (g, kn, pos01 (kn.slider) * valueEase (kn.cx), flashAt (kn.cx));
+            drawKnob (g, kn, pos01 (kn.slider) * valueEase (HW::knobs[kn.art].cx), flashAt (HW::knobs[kn.art].cx));
 
-    if (g.clipRegionIntersects (faderHit.expanded (10.0f, 14.0f).getSmallestIntegerContainer()))
+    if (g.clipRegionIntersects (faderHit.expanded (16.0f, 30.0f).getSmallestIntegerContainer()))
     {
         const float e = introRunning ? bezier (0.2f, 0.75f, 0.25f, 1.0f, ((float) introT() - (1.75f + 0.0002f * faderX + 0.08f)) / 0.8f) : 1.0f;
         drawFaderCap (g, pos01 (fader) * e);
     }
-    if (g.clipRegionIntersects (juce::Rectangle<int> (40, 590, 150, 70)))
+    if (g.clipRegionIntersects (modeArea.getSmallestIntegerContainer()))
         drawModeLamps (g, flashAt (56.0f));
     if (g.clipRegionIntersects (faceR.getSmallestIntegerContainer()))
         drawMeterDynamic (g);
-    if (g.clipRegionIntersects (dispR.getSmallestIntegerContainer()))
+    if (g.clipRegionIntersects (screenR.getSmallestIntegerContainer()))
         drawDisplayDynamic (g);
     drawKeys (g);
 
@@ -1432,7 +1150,7 @@ void AnbuEditor::toggleMeterMode (bool out)
     proc.uiMeterOut = out;
     needlePos = meterFrac();
     needleVel = 0.0f;
-    repaintDesign (bezelR);
+    repaintDesign (faceR.expanded (4.0f));
 }
 
 void AnbuEditor::openAnalyser()
@@ -1462,7 +1180,7 @@ void AnbuEditor::setReadout (int knob)
     readoutKnob = knob;
     readoutTime = juce::Time::getMillisecondCounterHiRes();
     readoutAlpha = 1.0f;
-    repaintDesign ({ 290.0f, 322.0f, 320.0f, 28.0f });
+    repaintDesign (readoutR.expanded (2.0f));
     if (analyserWindow != nullptr && analyserWindow->isVisible()) analyserWindow->view->repaint();
 }
 
@@ -1474,8 +1192,8 @@ void AnbuEditor::mouseDown (const juce::MouseEvent& e)
     if (pillGR.contains (p)) { toggleMeterMode (false); return; }
     if (pillOut.contains (p)) { toggleMeterMode (true); return; }
     if (p.getDistanceFrom ({ modeBtnX, modeBtnY }) <= 19.0f) { setChoice (ids::mode, modeLimit ? 0 : 1); return; }
-    if (juce::Rectangle<float> (50.0f, lampYC - 11.0f, 120.0f, 22.0f).contains (p)) { setChoice (ids::mode, 0); return; }
-    if (juce::Rectangle<float> (50.0f, lampYL - 11.0f, 120.0f, 22.0f).contains (p)) { setChoice (ids::mode, 1); return; }
+    if (juce::Rectangle<float> (44.0f, lampYC - 11.0f, 130.0f, 22.0f).contains (p)) { setChoice (ids::mode, 0); return; }
+    if (juce::Rectangle<float> (44.0f, lampYL - 11.0f, 130.0f, 22.0f).contains (p)) { setChoice (ids::mode, 1); return; }
     const int k = keyAt (p);
     if (k >= 0) clickKey (k);
 }
@@ -1483,8 +1201,8 @@ void AnbuEditor::mouseDown (const juce::MouseEvent& e)
 bool AnbuEditor::clickableAt (juce::Point<float> p) const
 {
     return expandR.contains (p) || pillGR.contains (p) || pillOut.contains (p) || p.getDistanceFrom ({ modeBtnX, modeBtnY }) <= 19.0f
-        || juce::Rectangle<float> (50.0f, lampYC - 11.0f, 120.0f, 22.0f).contains (p)
-        || juce::Rectangle<float> (50.0f, lampYL - 11.0f, 120.0f, 22.0f).contains (p) || keyAt (p) >= 0;
+        || juce::Rectangle<float> (44.0f, lampYC - 11.0f, 130.0f, 22.0f).contains (p)
+        || juce::Rectangle<float> (44.0f, lampYL - 11.0f, 130.0f, 22.0f).contains (p) || keyAt (p) >= 0;
 }
 
 void AnbuEditor::mouseMove (const juce::MouseEvent& e)
@@ -1605,7 +1323,7 @@ void AnbuEditor::timerCallback()
         if (on != keyState[(size_t) i]) { keyState[(size_t) i] = on; repaintDesign (keyRect (i).expanded (8.0f)); }
     }
     const bool lim = (int) std::lround (proc.apvts.getRawParameterValue (ids::mode)->load()) == 1;
-    if (lim != modeLimit) { modeLimit = lim; repaintDesign ({ 40.0f, 590.0f, 150.0f, 70.0f }); }
+    if (lim != modeLimit) { modeLimit = lim; repaintDesign (modeArea); }
 
     // needle: VU-like ballistics, ~300 ms rise with a slight overshoot
     if (! frozen)
@@ -1640,7 +1358,7 @@ void AnbuEditor::timerCallback()
         if (std::abs (a - readoutAlpha) > 1.0e-4f)
         {
             readoutAlpha = a;
-            repaintDesign ({ 290.0f, 322.0f, 320.0f, 28.0f });
+            repaintDesign (readoutR.expanded (2.0f));
             specDirty = true;
         }
         if (a <= 0.0f) readoutKnob = -1;

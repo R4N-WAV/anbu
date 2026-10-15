@@ -31,6 +31,9 @@ int main (int argc, char** argv)
     setParam (p, ids::mix, 100.0f); setParam (p, ids::noiseLevel, -96.0f);
     setParam (p, ids::os, 2.0f);    setParam (p, ids::phase, 0.0f); setParam (p, ids::mode, 0.0f);
     p.uiMeterOut = mode == "out";
+    if (mode == "clean") { setParam (p, ids::pr, 0.0f); setParam (p, ids::color, 0.0f); }
+    const bool idle = mode.startsWith ("idle");   // idle=<pr>: silence in, the GR meter must read 0
+    if (idle) setParam (p, ids::pr, mode.fromFirstOccurrenceOf ("=", false, false).getFloatValue());
     p.prepareToPlay (48000.0, 512);
 
     // vocal-ish test signal: pink-ish noise with a few harmonics, about -20 dBFS RMS
@@ -48,7 +51,7 @@ int main (int argc, char** argv)
                 const double pink = (b0 + b1 + b2 + w * 0.1848) * 0.11;
                 ph += 2.0 * juce::MathConstants<double>::pi * 180.0 / 48000.0;
                 const double voice = 0.05 * (std::sin (ph) + 0.6 * std::sin (2 * ph) + 0.4 * std::sin (3 * ph) + 0.25 * std::sin (5 * ph));
-                const float v = (float) (0.6 * pink + voice);
+                const float v = idle ? 0.0f : (float) (0.6 * pink + voice);
                 b.setSample (0, s, v); b.setSample (1, s, v);
             }
             p.processBlock (b, midi);
@@ -64,7 +67,8 @@ int main (int argc, char** argv)
         run (2);
         juce::MessageManager::getInstance()->runDispatchLoopUntil (17);
     }
-    ae->freezeMeters (-3.0f, 4.5f);
+    std::printf ("meter after run: GR %.2f dB, VU %.2f\n", p.meterGrDb.load(), p.meterVuDb.load());
+    if (mode != "clean") ae->freezeMeters (-3.0f, 4.5f);
     if (mode.startsWith ("intro=")) ae->setIntroFrame (mode.fromFirstOccurrenceOf ("=", false, false).getDoubleValue());
     if (mode == "readout" || mode == "analyser") ae->setReadout (2);
     for (int i = 0; i < 4; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (17);

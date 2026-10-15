@@ -32,12 +32,15 @@ All controls move in whole steps.
 ## Using the panel
 - **Start-up:** the first time a new Anbu opens, அ lights up, grows into the logo and settles into the plate while a wave of light runs across the panel. Click anywhere to skip it. It plays once per plugin instance.
 - **Knobs and fader:** drag up/down. Double-click = default. Mouse wheel works. While you move one, its name and value show in the display. The ring around a knob is dark at the knob's zero; Input and Output light from 0 dB outwards.
-- **Keys:** click. The pressed key sits lower and its legend glows.
-- **Needle meter:** *GR* shows gain reduction (0–20 dB). *Out* shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
-- **Display:** beige = output spectrum, orange = the harmonics Anbu adds (drawn 24 dB louder so you can see them), white line = Anbu's tone curve at the current settings.
+- **Keys:** click. The pressed key sits lower and its legend lights up.
+- **Needle meter:** click *GR* or *OUT* on the meter face. GR shows gain reduction, read from right to left (rests at 0 on the right, 20 dB at the left); it is zeroed at idle like the real unit's GR-zero trim, so high Peak reduction settings read 0 with no signal. OUT shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
+- **Display:** beige = output spectrum, orange = the harmonics and distortion Anbu adds, at their true level (at Peak reduction 0 and Color 0 they sit about 50 dB below the signal, so you will barely see them), white line = Anbu's tone curve at the current settings.
 - **Analyser window:** the arrows in the display's corner open a larger analyser in its own window (also shows input, peak hold and a 60/90 dB range). Drag its top bar to move it, the corner to resize, × to close.
 - The plugin window can be resized from the bottom-right corner.
 
 ## If something goes wrong
 - **Red cross in Actions:** open the run → *windows-vst3* → the red step, copy the last ~30 lines and send them to Claude.
 - **FL doesn't list Anbu:** make sure the folder is exactly `C:\Program Files\Common Files\VST3\Anbu.vst3`, then *Find installed plugins* again.
+
+## Panel artwork
+The faceplate is rendered offline from a 3D description of the panel (`tools/hw`: `hw.py` describes the surfaces and materials, `render.cpp` lights them, `assets.py` writes the images to `Resources/hw` and the geometry to `Source/HwAssets.h`). To re-render: compile `render.cpp` (`g++ -O3 -std=c++17 -pthread`), then `python3 tools/hw/assets.py <renderer> <work dir>` (numpy, scipy, Pillow with libraqm).

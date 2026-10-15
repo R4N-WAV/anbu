@@ -117,6 +117,7 @@ public:
         for (int c = 0; c < 2; ++c) for (int k = 0; k < 4; ++k) eq_[c][k].section(fs, c == 0 ? LIN_EQ_L[k] : LIN_EQ_R[k]);
         reset();
     }
+    double idleConductance() const noexcept { return Gidle_; }
     void reset() {
         env_ = um_ = 0; G_[0] = G_[1] = G_[2] = 0; lfy_ = eLF_ = eAll_ = 0;
         for (auto* b : { &hpL_, &hpR_, &shL_, &shR_, &rip_ }) b->reset();
@@ -193,7 +194,7 @@ public:
             for (int k = 0; k < 4; ++k) ch_[c].eq[k].section(fs_, c == 0 ? LIN_EQ_L[k] : LIN_EQ_R[k]);
             ch_[c].phi.lp(fs_, LN_FC * (c == 0 ? 1.0 : LN_TOL_FC));
             ch_[c].ex.tau(fs_, 0.02); ch_[c].ep.tau(fs_, 0.02);
-            ch_[c].dcd.lp(fs_, 8.0); ch_[c].dco.lp(fs_, 5.0);
+            ch_[c].dcd.lp(fs_, 8.0); ch_[c].dco.lp(fs_, 5.0); ch_[c].dch.lp(fs_, 5.0);
             ch_[c].post.lp(fs_, std::min(LN_FPOST, 0.45 * fs_));
         }
         reset();
@@ -201,7 +202,7 @@ public:
     void reset() {
         for (auto& c : ch_) {
             c.bell.reset(); c.bell2.reset(); c.hf0.reset(); for (auto& b : c.eq) b.reset();
-            c.vc = 0; c.em2 = c.em3 = c.ef = 0; c.phi.y = 0; c.ex.y = c.ep.y = 1e-12; c.dcd.y = 0; c.dco.y = 0; c.post.y = 0;
+            c.vc = 0; c.em2 = c.em3 = c.ef = 0; c.phi.y = 0; c.ex.y = c.ep.y = 1e-12; c.dcd.y = 0; c.dco.y = 0; c.dch.y = 0; c.post.y = 0;
         }
         Gprev_ = 0; Gsprev_ = 0;
     }
@@ -264,7 +265,8 @@ public:
                 io[c][i] = (float)((yo - s.dco.y) / M_);
                 // display: Color harmonics (through the cell's gain), cell modulation, output-stage curvature
                 const double vlin = (vin + Gc * s.vc) / (Gc + 1.0);
-                hsum += hc / (1.0 + Gc) + (v - vlin) + (yo - uo) / M_;
+                s.dch.run(yo - uo);
+                hsum += hc / (1.0 + Gc) + (v - vlin) + (yo - uo - s.dch.y) / M_;   // the curvature's own DC removed
             }
             if (harm != nullptr) harm[i] = (float)(0.5 * hsum);
         }
@@ -272,7 +274,7 @@ public:
 private:
     struct Ch {
         Biquad bell, bell2, hf0, eq[4];
-        OnePole phi, ex, ep, dcd, dco, post;
+        OnePole phi, ex, ep, dcd, dco, dch, post;
         double vc = 0, em2 = 0, em3 = 0, ef = 0;
     };
     // Lindell-style residual (flux-modulated gain + amplifier curvature), fitted at THD max (kappa = 1)

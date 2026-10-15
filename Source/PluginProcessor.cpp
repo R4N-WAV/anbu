@@ -204,7 +204,8 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // ---- meters
     double gmax = 0.0;
     for (int i = 0; i < n; ++i) gmax = juce::jmax (gmax, gsBuf[(size_t) i]);
-    meterGrDb.store ((float) (20.0 * std::log10 (1.0 + gmax)));
+    // the meter is zeroed at idle, like the LA-2A's GR-zero trim (high PR drops the idle level; that is not compression)
+    meterGrDb.store ((float) juce::jmax (0.0, 20.0 * std::log10 ((1.0 + gmax) / (1.0 + control.idleConductance()))));
     meterGs.store ((float) gsBuf[(size_t) (n - 1)]);
     meterCapW.store ((float) capBuf[(size_t) (n - 1)]);
     const double a = std::exp (-(double) n / (0.05 * fs));               // 50 ms mean square; the needle adds VU ballistics

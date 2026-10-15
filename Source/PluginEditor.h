@@ -3,26 +3,26 @@
 #include <juce_dsp/juce_dsp.h>
 #include "PluginProcessor.h"
 
-// அன்பு v1 panel: a lunchbox of three modules (1000 x 700 design units), drawn entirely as vectors.
-// Oxblood faceplates with a gold double border, dim lamp rings on the knobs, an SSL-style needle meter,
-// a small analyser (spectrum, added harmonics, tone curve) that pops out into its own window,
-// and a start-up sequence the first time the panel opens.
+// அன்பு v1 panel: a lunchbox of three modules (1000 x 700 design units).
+// The faceplate, knobs, keys, lamps, fader cap and meter faces are pre-rendered 3D assets
+// (tools/hw, rendered at 2 px per unit); the needle, the analyser screen and the start-up
+// sequence are drawn live on top.
 
 namespace anbu::ui
 {
 struct Theme
 {
-    juce::Colour chassis, plateTop, plateBot, edge, hi, label, dim, value, recess, slot, seat,
-                 deboss, debHi, debLo, logoLit, zari, lamp, glow, lampOff, track,
-                 keyUp0, keyUp1, keyDn0, keyDn1, keyOn, screen, screenEdge, grid, gridMaj;
+    juce::Colour chassis, plateTop, plateBot, label, dim, value, deboss, debHi, debLo, logoLit, zari, lamp, glow,
+                 keyOn, screen, grid, gridMaj;
 };
 const Theme& theme();
 
 struct Fonts
 {
     Fonts();
-    juce::Font get (int weight, float size) const;   // size = CSS px (em size); line height is 1.64 em
-    juce::Typeface::Ptr w500, w600, w700, w800;
+    juce::Font logo (int weight, float size) const;   // Catamaran (Tamil logo), line height 1.64 em
+    juce::Font ui (int weight, float size) const;     // Barlow Semi Condensed, line height 1.2 em
+    juce::Typeface::Ptr c600, c800, b500, b600, b700;
 };
 
 // shared analyser data (filled by the editor's timer, drawn by the panel and by the pop-out window)
@@ -32,6 +32,14 @@ struct Spectrum
     std::array<double, nPts> freqs {};
     std::array<float, nPts> out {}, in {}, harm {}, peak {}, tone {};
     bool active = false, inputActive = false;
+};
+
+// a rendered image kept at its source size plus a copy resampled to the current pixel scale
+struct Art
+{
+    juce::Image src, scaled;
+    float scaledFor = 0.0f;
+    const juce::Image& at (float pixelsPerUnit);       // pixelsPerUnit: device pixels per design unit
 };
 
 class AnalyserView;
@@ -74,14 +82,13 @@ private:
     };
     struct Knob
     {
+        int art = 0;                         // index into anbu::hw::knobs
         const char* id = nullptr;
         juce::String name;
-        float cx = 0, cy = 0, D = 0, rr = 0;
-        bool bipolar = false, big = false;
-        float labelGap = 2;
         RoundSlider slider;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
         juce::RangedAudioParameter* param = nullptr;
+        anbu::ui::Art strip, ring;
     };
 
     float scale() const { return (float) getWidth() / (float) baseW; }
@@ -91,16 +98,15 @@ private:
     juce::Rectangle<float> knobArea (const Knob&) const;
 
     // drawing
-    void renderStatic (juce::Graphics&);
-    void drawKnobDynamic (juce::Graphics&, const Knob&, float pos, float flash);
+    void renderStatic (juce::Graphics&, float pixelsPerUnit);
+    void drawArt (juce::Graphics&, anbu::ui::Art&, juce::Rectangle<float> dest, float alpha = 1.0f);
+    void drawKnob (juce::Graphics&, Knob&, float pos, float flash);
     void drawFaderCap (juce::Graphics&, float pos);
     void drawModeLamps (juce::Graphics&, float flash);
     void drawMeterDynamic (juce::Graphics&);
     void drawDisplayDynamic (juce::Graphics&);
     void drawKeys (juce::Graphics&);
-    void drawLogo (juce::Graphics&);
     void drawIntroOverlay (juce::Graphics&);
-    void drawKey (juce::Graphics&, juce::Rectangle<float>, const juce::String&, bool active, float flash, float size);
 
     // interaction
     int keyAt (juce::Point<float>) const;          // 0-3 oversampling, 4-5 phase, 6 noise, -1 none
@@ -129,6 +135,10 @@ private:
     juce::Slider fader;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> faderAtt;
     juce::RangedAudioParameter* colorParam = nullptr;
+
+    // rendered art
+    anbu::ui::Art bg, faceGr, faceOut, pivot, glassMeter, glassDisp, faderCap, lampC, lampL, noLogo;
+    std::array<anbu::ui::Art, 7> keyArt;
 
     juce::Image staticLayer;
     float staticScale = 0.0f;

@@ -51,7 +51,12 @@ jobs:
           Expand-Archive pluginval.zip -DestinationPath pluginval -Force
           $exe = Get-ChildItem -Recurse pluginval -Filter pluginval.exe | Select-Object -First 1
           if (-not $exe) { Write-Output "::error::pluginval.exe not found in the download"; exit 1 }
-          & $exe.FullName --strictness-level 5 --validate-in-process --timeout-ms 600000 --output-dir pv-log "dist/Anbu.vst3" *> pluginval.txt
-          $code = $LASTEXITCODE
-          Get-Content pluginval.txt | Select-Object -Last 25 | ForEach-Object { Write-Output "::warning::pluginval: $_" }
+          # pluginval is a GUI-subsystem program on Windows: start it and wait for it
+          $args = @("--strictness-level", "5", "--validate-in-process", "--timeout-ms", "600000", "--output-dir", "pv-log", "--validate", "dist/Anbu.vst3")
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList $args -Wait -PassThru -NoNewWindow
+          $code = $p.ExitCode
+          $log = Get-ChildItem -Recurse pv-log -Filter *.txt -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($log) { Get-Content $log.FullName | Select-String -Pattern "FAILED|!!!|SUCCESS|Starting tests|Completed" | Select-Object -Last 25 | ForEach-Object { Write-Output "::warning::pluginval: $_" } }
+          else { Write-Output "::warning::pluginval wrote no log" }
           if ($code -ne 0) { Write-Output "::error::pluginval failed (exit $code)"; exit 1 }
+          Write-Output "pluginval passed"

@@ -1,5 +1,6 @@
-// Renders the editor to PNG (headless check of the panel against Preview B).
-// usage: AnbuSnapshot out.png [scale] [expanded 0/1] [preview 0/1]
+// Renders the editor to PNG (headless check of the panel against the approved design).
+// usage: AnbuSnapshot out.png [scale] [mode]
+//   mode: panel (default) | out (needle on output) | intro=<seconds> | analyser | readout
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
@@ -10,23 +11,26 @@ static void setParam (AnbuProcessor& p, const char* id, float v)
     prm->setValueNotifyingHost (prm->convertTo0to1 (v));
 }
 
+static void writePng (const juce::Image& img, const juce::File& f)
+{
+    f.deleteFile();
+    if (auto os = f.createOutputStream()) { juce::PNGImageFormat png; png.writeImageToStream (img, *os); }
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
     const float scale = argc > 2 ? (float) std::atof (argv[2]) : 2.0f;
-    const bool expanded = argc > 3 && std::atoi (argv[3]) != 0;
-    const bool preview = argc > 4 ? std::atoi (argv[4]) != 0 : true;
+    const juce::String mode = argc > 3 ? juce::String (argv[3]) : juce::String ("panel");
 
     AnbuProcessor p;
     p.setPlayConfigDetails (2, 2, 48000.0, 512);
-    if (preview)   // control positions of Preview B
-    {
-        setParam (p, ids::pr, 64.2f);   setParam (p, ids::color, 45.0f);
-        setParam (p, ids::input, 0.0f); setParam (p, ids::output, 3.4f);
-        setParam (p, ids::mix, 100.0f); setParam (p, ids::noiseLevel, -107.0f);
-        setParam (p, ids::os, 2.0f);    setParam (p, ids::phase, 0.0f); setParam (p, ids::mode, 0.0f);
-    }
-    p.uiAnalyserExpanded = expanded;
+    // control positions of the approved design
+    setParam (p, ids::pr, 42.0f);   setParam (p, ids::color, 35.0f);
+    setParam (p, ids::input, 0.0f); setParam (p, ids::output, 3.0f);
+    setParam (p, ids::mix, 100.0f); setParam (p, ids::noiseLevel, -96.0f);
+    setParam (p, ids::os, 2.0f);    setParam (p, ids::phase, 0.0f); setParam (p, ids::mode, 0.0f);
+    p.uiMeterOut = mode == "out";
     p.prepareToPlay (48000.0, 512);
 
     // vocal-ish test signal: pink-ish noise with a few harmonics, about -20 dBFS RMS
@@ -53,21 +57,39 @@ int main (int argc, char** argv)
     run (200);
     std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
     auto* ae = dynamic_cast<AnbuEditor*> (ed.get());
+    if (ae == nullptr) return 1;
+    ae->skipIntro();
     for (int i = 0; i < 60; ++i)
     {
         run (2);
         juce::MessageManager::getInstance()->runDispatchLoopUntil (17);
     }
-    if (preview && ae != nullptr) ae->freezeMeters (-7.97f, 7.0f);
+    ae->freezeMeters (-3.0f, 4.5f);
+    if (mode.startsWith ("intro=")) ae->setIntroFrame (mode.fromFirstOccurrenceOf ("=", false, false).getDoubleValue());
+    if (mode == "readout" || mode == "analyser") ae->setReadout (2);
     for (int i = 0; i < 4; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (17);
 
-    auto t0 = juce::Time::getMillisecondCounterHiRes();
-    auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, scale);
-    auto t1 = juce::Time::getMillisecondCounterHiRes();
     juce::File f (argc > 1 ? argv[1] : "anbu_panel.png");
-    f.deleteFile();
-    if (auto os = f.createOutputStream()) { juce::PNGImageFormat png; png.writeImageToStream (img, *os); }
+    auto t0 = juce::Time::getMillisecondCounterHiRes();
+    juce::Image img;
+    if (mode == "analyser")
+    {
+        auto view = ae->makeAnalyserView();
+        img = view->createComponentSnapshot (view->getLocalBounds(), true, scale);
+    }
+    else
+        img = ed->createComponentSnapshot (ed->getLocalBounds(), true, scale);
+    auto t1 = juce::Time::getMillisecondCounterHiRes();
+    writePng (img, f);
     std::printf ("wrote %s %dx%d (full paint %.1f ms)\n", f.getFullPathName().toRawUTF8(), img.getWidth(), img.getHeight(), t1 - t0);
+
+    // second paint (static layer cached) for a timing figure
+    if (mode == "panel")
+    {
+        auto t2 = juce::Time::getMillisecondCounterHiRes();
+        auto img2 = ed->createComponentSnapshot (ed->getLocalBounds(), true, scale);
+        std::printf ("cached repaint %.1f ms\n", juce::Time::getMillisecondCounterHiRes() - t2);
+    }
     ed = nullptr;
     return 0;
 }

@@ -64,7 +64,7 @@ public:
     double getAnalyserRate() const { return fs; }
 
     // editor-only state kept across editor open/close
-    bool uiAnalyserExpanded = false;
+    bool uiIntroPlayed = false;       // start-up animation runs the first time this instance's panel opens
     bool uiMeterOut = false;          // needle shows output level instead of GR (saved with the session)
 
 private:

@@ -3,10 +3,40 @@
 #include <juce_dsp/juce_dsp.h>
 #include "PluginProcessor.h"
 
-// Anbu v1 hardware panel. The artwork is Preview B itself (2400 x 1344 master, drawn at any size);
-// everything that moves is drawn live on top of it:
-//   knob pointers (rotated sprites), LED rings (additive light in linear space + lit cores),
-//   VU needle with its shadow, GR LED strip, switch lamps, spectrum + EQ curve display.
+// அன்பு v1 panel: a lunchbox of three modules (1000 x 700 design units), drawn entirely as vectors.
+// Oxblood faceplates with a gold double border, dim lamp rings on the knobs, an SSL-style needle meter,
+// a small analyser (spectrum, added harmonics, tone curve) that pops out into its own window,
+// and a start-up sequence the first time the panel opens.
+
+namespace anbu::ui
+{
+struct Theme
+{
+    juce::Colour chassis, plateTop, plateBot, edge, hi, label, dim, value, recess, slot, seat,
+                 deboss, debHi, debLo, logoLit, zari, lamp, glow, lampOff, track,
+                 keyUp0, keyUp1, keyDn0, keyDn1, keyOn, screen, screenEdge, grid, gridMaj;
+};
+const Theme& theme();
+
+struct Fonts
+{
+    Fonts();
+    juce::Font get (int weight, float size) const;   // size = CSS px (em size); line height is 1.64 em
+    juce::Typeface::Ptr w500, w600, w700, w800;
+};
+
+// shared analyser data (filled by the editor's timer, drawn by the panel and by the pop-out window)
+struct Spectrum
+{
+    static constexpr int nPts = 240;
+    std::array<double, nPts> freqs {};
+    std::array<float, nPts> out {}, in {}, harm {}, peak {}, tone {};
+    bool active = false, inputActive = false;
+};
+
+class AnalyserView;
+}
+
 class AnbuEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -18,96 +48,123 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
 
-    // test hook for the snapshot tool: hold the meters at fixed values
+    // snapshot tool hooks
     void freezeMeters (float vuDb, float grDb);
+    void skipIntro();
+    void setIntroFrame (double seconds);     // render a fixed frame of the start-up
+    void setReadout (int knob);
+    std::unique_ptr<juce::Component> makeAnalyserView();
 
-    static constexpr int baseW = 1200, baseH = 672;
+    static constexpr int baseW = 1000, baseH = 700;
 
 private:
     void timerCallback() override;
 
-    struct KnobSlider : public juce::Slider
+    struct InvisibleLook : public juce::LookAndFeel_V4
+    {
+        void drawRotarySlider (juce::Graphics&, int, int, int, int, float, float, float, juce::Slider&) override {}
+        void drawLinearSlider (juce::Graphics&, int, int, int, int, float, float, float, juce::Slider::SliderStyle, juce::Slider&) override {}
+        juce::Slider::SliderLayout getSliderLayout (juce::Slider&) override;
+        void drawCornerResizer (juce::Graphics&, int w, int h, bool isMouseOver, bool isMouseDragging) override;
+    };
+    struct RoundSlider : public juce::Slider
     {
         float radius = 0.0f;
         bool hitTest (int x, int y) override;
     };
-    struct InvisibleLook : public juce::LookAndFeel_V4
-    {
-        void drawRotarySlider (juce::Graphics&, int, int, int, int, float, float, float, juce::Slider&) override {}
-    };
     struct Knob
     {
-        int index = 0;
-        KnobSlider slider;
+        const char* id = nullptr;
+        juce::String name;
+        float cx = 0, cy = 0, D = 0, rr = 0;
+        bool bipolar = false, big = false;
+        float labelGap = 2;
+        RoundSlider slider;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
         juce::RangedAudioParameter* param = nullptr;
-        float pos = 0.0f;
-        int litLo = 0, litHi = -1;   // lit LED indices [litLo, litHi)
-        juce::Rectangle<int> region;   // 2x px
-        juce::Image cache;             // background + LED light for the region
     };
 
-    // geometry helpers (2x px <-> component px)
-    float scale() const { return (float) getWidth() / 2400.0f; }
-    void repaint2x (juce::Rectangle<float> r);
-    juce::Point<float> to2x (juce::Point<float> p) const { return p / scale(); }
-    juce::Point<float> ledPos (int knob, int i) const;
+    float scale() const { return (float) getWidth() / (float) baseW; }
+    juce::Point<float> toDesign (juce::Point<float> p) const { return p / scale(); }
+    void repaintDesign (juce::Rectangle<float> r);
+    float pos01 (const juce::Slider&) const;
+    juce::Rectangle<float> knobArea (const Knob&) const;
 
-    void knobChanged (int k);
-    static void litRange (int knob, float pos, int& lo, int& hi);
-    void rebuildKnobCache (Knob&);
-    void rebuildGrCache();
-    void updateSpectrum();
-    void updateEqCurve();
-    int switchAt (juce::Point<float> p2x) const;
-    bool switchOn (int i) const;
-    void clickSwitch (int i);
+    // drawing
+    void renderStatic (juce::Graphics&);
+    void drawKnobDynamic (juce::Graphics&, const Knob&, float pos, float flash);
+    void drawFaderCap (juce::Graphics&, float pos);
+    void drawModeLamps (juce::Graphics&, float flash);
+    void drawMeterDynamic (juce::Graphics&);
+    void drawDisplayDynamic (juce::Graphics&);
+    void drawKeys (juce::Graphics&);
+    void drawLogo (juce::Graphics&);
+    void drawIntroOverlay (juce::Graphics&);
+    void drawKey (juce::Graphics&, juce::Rectangle<float>, const juce::String&, bool active, float flash, float size);
+
+    // interaction
+    int keyAt (juce::Point<float>) const;          // 0-3 oversampling, 4-5 phase, 6 noise, -1 none
+    bool keyOn (int) const;
+    void clickKey (int);
     void setChoice (const char* id, int index);
-    juce::Rectangle<float> iconRect() const;
-    juce::Rectangle<float> plotRect() const;
-    juce::Rectangle<float> analyserRegion() const;
-    void drawAnalyser (juce::Graphics&);
-    void showReadout (int knob);
+    void toggleMeterMode (bool out);
+    void openAnalyser();
+    bool clickableAt (juce::Point<float>) const;
+    juce::String readoutText() const;
+
+    // analysis
+    void updateSpectrum();
+    void updateTone();
+
+    // intro timeline (seconds since the panel opened)
+    double introT() const;
+    float flashAt (float x) const;
+    float valueEase (float x) const;
+    float meterFrac() const;
 
     AnbuProcessor& proc;
     InvisibleLook invisible;
-    std::array<Knob, 6> knobs;
+    anbu::ui::Fonts fonts;
+    std::array<Knob, 5> knobs;
+    juce::Slider fader;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> faderAtt;
+    juce::RangedAudioParameter* colorParam = nullptr;
 
-    // artwork
-    juce::Image bg2x, bgSoft, bg1x, ptrBig, ptrSmall, coreBig, coreSmall, needleBody, needleShadow, grLit, iconExpand, analyserBig;
-    std::array<juce::Image, 9> swOn;
-    juce::Typeface::Ptr inter;
-    std::array<float, 256> toLin {};
-    std::vector<juce::uint8> toSrgb;   // linear [0,1] in 1/16383 steps -> sRGB byte
+    juce::Image staticLayer;
+    float staticScale = 0.0f;
+    bool staticOut = false;
 
-    // meters
+    // meter
     bool frozen = false;
-    float vuTarget = -60.0f, vuPos = -40.0f, vuVel = 0.0f, drawnVu = 1000.0f;
-    float grDb = 0.0f;
-    int grLitCount = -1;
-    juce::Image grCache;
+    float vuDb = -60.0f, grDb = 0.0f, needlePos = 0.0f, needleVel = 0.0f, drawnNeedle = -1.0f;
 
-    // switches (polled from the parameters)
-    std::array<bool, 9> swState {};
+    // keys
+    std::array<bool, 7> keyState {};
+    bool modeLimit = false;
 
-    // analyser
-    static constexpr int fftOrder = 12, fftSize = 1 << fftOrder, nPts = 220;
-    juce::dsp::FFT fft { fftOrder };
-    std::vector<float> ring = std::vector<float> ((size_t) fftSize, 0.0f), fftData = std::vector<float> ((size_t) fftSize * 2, 0.0f),
-                       window = std::vector<float> ((size_t) fftSize, 0.0f), pullBuf = std::vector<float> (1 << 15, 0.0f),
-                       pullIn = std::vector<float> (1 << 15, 0.0f), pullHarm = std::vector<float> (1 << 15, 0.0f),
-                       ringH = std::vector<float> ((size_t) fftSize, 0.0f);
-    int ringPos = 0;
-    std::array<double, nPts> freqs {};
-    std::array<float, nPts> specDb {}, harmDb {}, eqDb {};
-    bool specActive = false;
-    float eqKeyPr = -1, eqKeyColor = -1, eqKeyGs = -1;
-    bool expanded = false;
+    // intro
+    double introStart = -1.0, introFixed = -1.0;
+    bool introRunning = false;
 
-    // value readout
+    // readout
     int readoutKnob = -1;
     double readoutTime = 0.0;
     float readoutAlpha = 0.0f;
+
+    // analysis
+    static constexpr int fftOrder = 12, fftSize = 1 << fftOrder;
+    juce::dsp::FFT fft { fftOrder };
+    std::vector<float> ringOut = std::vector<float> ((size_t) fftSize, 0.0f), ringIn = std::vector<float> ((size_t) fftSize, 0.0f),
+                       ringHarm = std::vector<float> ((size_t) fftSize, 0.0f), fftData = std::vector<float> ((size_t) fftSize * 2, 0.0f),
+                       window = std::vector<float> ((size_t) fftSize, 0.0f), pullOut = std::vector<float> (1 << 15, 0.0f),
+                       pullIn = std::vector<float> (1 << 15, 0.0f), pullHarm = std::vector<float> (1 << 15, 0.0f);
+    int ringPos = 0;
+    anbu::ui::Spectrum spec;
+    bool specDirty = false;
+    float toneKeyPr = -1, toneKeyColor = -1, toneKeyGs = -1;
+
+    class AnalyserWindow;
+    std::unique_ptr<AnalyserWindow> analyserWindow;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AnbuEditor)
 };

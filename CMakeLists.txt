@@ -37,8 +37,8 @@ if(UNIX AND NOT APPLE)   # only for test builds in the Linux build environment
         JUCE_USE_XRENDER=0 JUCE_USE_XSHM=0 JUCE_ALSA=0 JUCE_JACK=0)
 endif()
 
-# Panel artwork (Preview B master and the live layers cut from it), compiled into the plugin
-file(GLOB ANBU_GUI_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/gui/*)
+# Panel fonts (Catamaran, OFL), compiled into the plugin; the panel itself is drawn as vectors
+file(GLOB ANBU_GUI_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/ui/*)
 juce_add_binary_data(AnbuGui HEADER_NAME BinaryData.h NAMESPACE BinaryData SOURCES ${ANBU_GUI_FILES})
 set_target_properties(AnbuGui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

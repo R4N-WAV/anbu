@@ -18,23 +18,25 @@ To start a build by hand: **Actions** tab → *Build Anbu (Windows VST3)* → **
 ## Controls
 | Control | What it does |
 |---|---|
-| PEAK REDUCTION | LA-2A-style amount of compression. Its tone and distortion change with it (most at the top of the range). |
-| COLOR | Lindell-80-style colour: the tone curve plus harmonics. 25 % ≈ the Lindell default, ~80 % ≈ its THD maximum, 100 % = overkill. 0 = off. |
-| INPUT / OUTPUT | Drive into the unit / level out. More input = more compression and more colour. |
-| MIX | Parallel blend; the dry signal is time-aligned. |
-| MODE | Compress or Limit (as on the LA-2A). |
-| NOISE + NOISE LEVEL | Optional hiss with a little 50 Hz hum, from −120 to −60 dBFS. |
-| OVERSAMPLING | Off / 2x / 4x / 8x. 4x is the normal setting. |
-| PHASE | Low Latency (almost no delay) or Linear (cleaner phase, a few ms delay). |
+| Peak reduction | LA-2A-style amount of compression. Its tone and distortion change with it (most at the top of the range). |
+| Color (fader) | Lindell-80-style colour: the tone curve plus harmonics. 25 % ≈ the Lindell default, ~80 % ≈ its THD maximum, 100 % = overkill. 0 = off. |
+| Input / Output | Drive into the unit / level out. More input = more compression and more colour. |
+| Mix | Parallel blend; the dry signal is time-aligned. |
+| Compress / Limit | Mode, as on the LA-2A. Click the round button to switch, or click the word. |
+| Noise + Noise level | Optional hiss with a little 50 Hz hum, from −120 to −60 dBFS. |
+| Oversampling | Off / 2× / 4× / 8×. 4× is the normal setting. |
+| Phase | Low latency (almost no delay) or Linear (cleaner phase, a few ms delay). |
+
+All controls move in whole steps.
 
 ## Using the panel
-- **Knobs:** drag up/down (or sideways). Double-click = default. Mouse wheel works. While you turn one, its name and value show in the display.
-- **Switches:** click. The lamp shows what is on.
-- **VU meter (OUTPUT dB):** 0 on the scale = −18 dBFS RMS, with classic VU needle timing.
-- **GR strip:** one LED per dB of gain reduction, lit from the right.
-- **Display:** orange = spectrum of the output. White line = Anbu's tone curve at the current settings
-  (it moves with PEAK REDUCTION, COLOR and the amount of compression). The arrows in the corner make the display tall; click again to go back.
-- The window can be resized from the bottom-right corner.
+- **Start-up:** the first time a new Anbu opens, அ lights up, grows into the logo and settles into the plate while a wave of light runs across the panel. Click anywhere to skip it. It plays once per plugin instance.
+- **Knobs and fader:** drag up/down. Double-click = default. Mouse wheel works. While you move one, its name and value show in the display. The ring around a knob is dark at the knob's zero; Input and Output light from 0 dB outwards.
+- **Keys:** click. The pressed key sits lower and its legend glows.
+- **Needle meter:** *GR* shows gain reduction (0–20 dB). *Out* shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
+- **Display:** beige = output spectrum, orange = the harmonics Anbu adds (drawn 24 dB louder so you can see them), white line = Anbu's tone curve at the current settings.
+- **Analyser window:** the arrows in the display's corner open a larger analyser in its own window (also shows input, peak hold and a 60/90 dB range). Drag its top bar to move it, the corner to resize, × to close.
+- The plugin window can be resized from the bottom-right corner.
 
 ## If something goes wrong
 - **Red cross in Actions:** open the run → *windows-vst3* → the red step, copy the last ~30 lines and send them to Claude.

@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
+#include <map>
 #include "PluginProcessor.h"
 
 // அன்பு v1 panel: a lunchbox of three modules (1000 x 700 design units).
@@ -34,12 +35,19 @@ struct Spectrum
     bool active = false, inputActive = false;
 };
 
-// a rendered image kept at its source size plus a copy resampled to the current pixel scale
+// a rendered image kept at its source size plus copies resampled to the pixel scales in use
 struct Art
 {
-    juce::Image src, scaled;
-    float scaledFor = 0.0f;
-    const juce::Image& at (float pixelsPerUnit);       // pixelsPerUnit: device pixels per design unit
+    juce::Image src;
+    std::vector<std::pair<float, juce::Image>> scaled;   // most recently used first (a few window sizes at once)
+    const juce::Image& at (float pixelsPerUnit);         // pixelsPerUnit: device pixels per design unit
+};
+
+// all panel art, decoded once per process and shared by every open Anbu window
+struct ArtLibrary
+{
+    Art& get (const char* resourceName);
+    std::map<std::string, std::unique_ptr<Art>> items;
 };
 
 class AnalyserView;
@@ -88,7 +96,8 @@ private:
         RoundSlider slider;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
         juce::RangedAudioParameter* param = nullptr;
-        anbu::ui::Art strip, ring;
+        anbu::ui::Art* strip = nullptr;
+        anbu::ui::Art* ring = nullptr;
     };
 
     float scale() const { return (float) getWidth() / (float) baseW; }
@@ -137,12 +146,16 @@ private:
     juce::RangedAudioParameter* colorParam = nullptr;
 
     // rendered art
-    anbu::ui::Art bg, faceGr, faceOut, pivot, glassMeter, glassDisp, faderCap, lampC, lampL, noLogo;
-    std::array<anbu::ui::Art, 7> keyArt;
+    juce::SharedResourcePointer<anbu::ui::ArtLibrary> library;
+    anbu::ui::Art *bg = nullptr, *faceOut = nullptr, *pivot = nullptr, *glassMeter = nullptr, *glassDisp = nullptr,
+                  *faderCap = nullptr, *lampC = nullptr, *lampL = nullptr, *noLogo = nullptr;
+    std::array<anbu::ui::Art*, 7> keyArt {};
 
     juce::Image staticLayer;
     float staticScale = 0.0f;
-    bool staticOut = false;
+    bool staticOut = false, staticFast = false;
+    double resizingSince = 0.0;                          // > 0 while the window is being resized
+    float artScale (juce::Graphics&) const;
 
     // meter
     bool frozen = false;

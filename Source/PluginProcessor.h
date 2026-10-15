@@ -29,7 +29,9 @@ public:
     void releaseResources() override {}
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
+    using AudioProcessor::processBlockBypassed;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -99,4 +101,5 @@ private:
                                               std::vector<float> ((size_t) anaSize, 0.0f) };
     std::vector<float> inMono, harmBase, harmOS;
     float lastOutGain = 1.0f, lastMix = 1.0f;
+    const unsigned noiseSeed = (unsigned) juce::Random::getSystemRandom().nextInt();   // each instance hisses differently
 };

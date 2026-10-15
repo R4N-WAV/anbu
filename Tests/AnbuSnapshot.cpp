@@ -73,6 +73,23 @@ int main (int argc, char** argv)
     if (mode == "readout" || mode == "analyser") ae->setReadout (2);
     for (int i = 0; i < 4; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (17);
 
+    if (mode == "resize")   // live window resize: every step must stay fast, the settled size is rebuilt in full quality
+    {
+        for (int w : { 1000, 1080, 1160, 1240, 1320, 900, 760 })
+        {
+            ed->setSize (w, w * 7 / 10);
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            std::printf ("resize step %d px: paint %.1f ms\n", w, juce::Time::getMillisecondCounterHiRes() - t0);
+        }
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (450);
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+        std::printf ("settled at 760 px: full-quality paint %.1f ms\n", juce::Time::getMillisecondCounterHiRes() - t0);
+        ed = nullptr;
+        return 0;
+    }
+
     juce::File f (argc > 1 ? argv[1] : "anbu_panel.png");
     auto t0 = juce::Time::getMillisecondCounterHiRes();
     juce::Image img;

@@ -73,7 +73,7 @@ void AnbuProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     control.prepare (fs);
     side.prepare (fs);
-    noise.prepare (fs);
+    noise.prepare (fs, noiseSeed);
 
     inGain.reset (fs, 0.03); outGain.reset (fs, 0.03); mixAmt.reset (fs, 0.03);
     prSmooth.reset (fs, 0.05); colorSmooth.reset (fs, 0.05);
@@ -230,6 +230,22 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 }
 
+// Host bypass: pass the input through, delayed by the reported latency so the track stays in time.
+void AnbuProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    const int n = buffer.getNumSamples();
+    const int nch = juce::jmin (2, buffer.getNumChannels());
+    for (int c = 0; c < nch; ++c)
+    {
+        float* x = buffer.getWritePointer (c);
+        for (int i = 0; i < n; ++i) { dryDelay.pushSample (c, x[i]); x[i] = dryDelay.popSample (c); }
+    }
+    for (int c = nch; c < buffer.getNumChannels(); ++c) buffer.clear (c, 0, n);
+    meterGrDb.store (0.0f);
+    vuMs = 0.0;
+    meterVuDb.store (-100.0f);
+}
+
 int AnbuProcessor::pullAnalyser (float* out, float* in, float* harm, int maxSamples)
 {
     const auto scope = anaFifo.read (juce::jmin (maxSamples, anaFifo.getNumReady()));
@@ -246,8 +262,9 @@ juce::AudioProcessorEditor* AnbuProcessor::createEditor() { return new AnbuEdito
 
 void AnbuProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    apvts.state.setProperty ("meterOut", uiMeterOut, nullptr);
-    if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, destData);
+    auto state = apvts.copyState();                       // hosts may call this from any thread: write into the copy
+    state.setProperty ("meterOut", uiMeterOut, nullptr);
+    if (auto xml = state.createXml()) copyXmlToBinary (*xml, destData);
 }
 
 void AnbuProcessor::setStateInformation (const void* data, int sizeInBytes)

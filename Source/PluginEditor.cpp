@@ -127,14 +127,29 @@ juce::Image resample (const juce::Image& src, int w, int h)
 const juce::Image& anbu::ui::Art::at (float ppu)
 {
     if (! src.isValid()) return src;
-    if (std::abs (ppu - scaledFor) > 1.0e-3f || ! scaled.isValid())
+    for (size_t i = 0; i < scaled.size(); ++i)
+        if (std::abs (scaled[i].first - ppu) < 1.0e-3f)
+        {
+            if (i > 0) std::rotate (scaled.begin(), scaled.begin() + (std::ptrdiff_t) i, scaled.begin() + (std::ptrdiff_t) i + 1);
+            return scaled.front().second;
+        }
+    const float f = ppu / HW::scale;
+    juce::Image img = std::abs (f - 1.0f) < 1.0e-3f ? src
+                    : resample (src, juce::roundToInt ((float) src.getWidth() * f), juce::roundToInt ((float) src.getHeight() * f));
+    scaled.insert (scaled.begin(), { ppu, img });
+    if (scaled.size() > 3) scaled.pop_back();
+    return scaled.front().second;
+}
+
+anbu::ui::Art& anbu::ui::ArtLibrary::get (const char* name)
+{
+    auto& slot = items[name];
+    if (slot == nullptr)
     {
-        scaledFor = ppu;
-        const float f = ppu / HW::scale;
-        scaled = std::abs (f - 1.0f) < 1.0e-3f ? src
-                                               : resample (src, juce::roundToInt ((float) src.getWidth() * f), juce::roundToInt ((float) src.getHeight() * f));
+        slot = std::make_unique<Art>();
+        slot->src = loadImage (name);
     }
-    return scaled;
+    return *slot;
 }
 
 // ============================================================================================ helpers
@@ -607,17 +622,16 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     setOpaque (true);
     setLookAndFeel (&invisible);
 
-    bg.src = loadImage ("bg_jpg");
-    faceGr.src = loadImage ("face_gr_jpg");
-    faceOut.src = loadImage ("face_out_jpg");
-    pivot.src = loadImage ("pivot_png");
-    glassMeter.src = loadImage ("glass_meter_png");
-    glassDisp.src = loadImage ("glass_disp_png");
-    faderCap.src = loadImage ("fader_cap_png");
-    lampC.src = loadImage ("lamp_c_png");
-    lampL.src = loadImage ("lamp_l_png");
-    noLogo.src = loadImage ("nologo_jpg");
-    for (int i = 0; i < 7; ++i) keyArt[(size_t) i].src = loadImage (("key_" + juce::String (i) + "_png").toRawUTF8());
+    bg = &library->get ("bg_jpg");
+    faceOut = &library->get ("face_out_jpg");
+    pivot = &library->get ("pivot_png");
+    glassMeter = &library->get ("glass_meter_png");
+    glassDisp = &library->get ("glass_disp_png");
+    faderCap = &library->get ("fader_cap_png");
+    lampC = &library->get ("lamp_c_png");
+    lampL = &library->get ("lamp_l_png");
+    noLogo = &library->get ("nologo_jpg");
+    for (int i = 0; i < 7; ++i) keyArt[(size_t) i] = &library->get (("key_" + juce::String (i) + "_png").toRawUTF8());
 
     for (int k = 0; k < 5; ++k)
     {
@@ -626,9 +640,10 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
         kn.art = k;
         kn.id = knobIds[k];
         kn.name = knobNames[k];
-        kn.strip.src = loadImage (a.strip);
-        kn.ring.src = loadImage (a.ring);
+        kn.strip = &library->get (a.strip);
+        kn.ring = &library->get (a.ring);
         kn.slider.setLookAndFeel (&invisible);
+        kn.slider.setTitle (kn.name);          // screen readers / host accessibility
         kn.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         kn.slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         kn.slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
@@ -649,6 +664,7 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     }
 
     fader.setLookAndFeel (&invisible);
+    fader.setTitle ("Color");
     fader.setSliderStyle (juce::Slider::LinearVertical);
     fader.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     fader.setSliderSnapsToMousePosition (false);
@@ -687,6 +703,7 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     setResizeLimits (700, 490, 1600, 1120);
     getConstrainer()->setFixedAspectRatio ((double) baseW / (double) baseH);
     setSize (baseW, baseH);
+    resizingSince = 0.0;
     startTimerHz (60);
 }
 
@@ -701,6 +718,7 @@ AnbuEditor::~AnbuEditor()
 
 void AnbuEditor::resized()
 {
+    resizingSince = juce::Time::getMillisecondCounterHiRes();
     const float s = scale();
     for (auto& kn : knobs)
     {
@@ -769,8 +787,7 @@ void AnbuEditor::setIntroFrame (double seconds)
 void AnbuEditor::drawArt (juce::Graphics& g, anbu::ui::Art& art, juce::Rectangle<float> dest, float alpha)
 {
     if (! art.src.isValid() || alpha <= 0.0f) return;
-    const float ppu = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
-    const auto& img = art.at (ppu);
+    const auto& img = art.at (artScale (g));
     g.setOpacity (juce::jmin (1.0f, alpha));
     g.drawImageTransformed (img, juce::AffineTransform::scale (dest.getWidth() / (float) img.getWidth(), dest.getHeight() / (float) img.getHeight())
                                      .translated (dest.getX(), dest.getY()));
@@ -781,10 +798,10 @@ void AnbuEditor::renderStatic (juce::Graphics& g, float ppu)
 {
     const auto& T = theme();
     {
-        const auto& img = bg.at (ppu);
+        const auto& img = bg->at (ppu);
         g.drawImageTransformed (img, juce::AffineTransform::scale ((float) baseW / (float) img.getWidth(), (float) baseH / (float) img.getHeight()));
     }
-    if (staticOut) drawArt (g, faceOut, faceR);
+    if (staticOut) drawArt (g, *faceOut, faceR);
 
     // analyser screen: grid, scale, legend, expand icon (drawn on the screen, under the glass)
     const float ym = 0.5f * (plotY0 + plotY1);
@@ -846,7 +863,7 @@ void AnbuEditor::drawKnob (juce::Graphics& g, Knob& kn, float pos, float flash)
             p.addPieSegment (cx - big, cy - big, 2 * big, 2 * big, juce::degreesToRadians (w0), juce::degreesToRadians (w1), 0.0f);
             g.saveState();
             g.reduceClipRegion (p);
-            drawArt (g, kn.ring, R (a.ringRect), al);
+            drawArt (g, *kn.ring, R (a.ringRect), al);
             g.restoreState();
         };
         wedge (lo + 0.5f * soft, hi - 0.5f * soft, alpha);
@@ -862,12 +879,11 @@ void AnbuEditor::drawKnob (juce::Graphics& g, Knob& kn, float pos, float flash)
     if (flash > 0.0f) litArc (-135.0f, 135.0f, flash);
 
     // knob: frame of the rendered filmstrip, clipped to the knob's round silhouette
-    if (kn.strip.src.isValid())
+    if (kn.strip != nullptr && kn.strip->src.isValid())
     {
         const int n = a.frames;
         const int f = juce::jlimit (0, n - 1, juce::roundToInt (pos * (float) (n - 1)));
-        const float ppu = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
-        const auto& img = kn.strip.at (ppu);
+        const auto& img = kn.strip->at (artScale (g));
         const float fh = (float) img.getHeight() / (float) n;
         const auto dest = R (a.sprite);
         g.saveState();
@@ -883,15 +899,15 @@ void AnbuEditor::drawKnob (juce::Graphics& g, Knob& kn, float pos, float flash)
 void AnbuEditor::drawFaderCap (juce::Graphics& g, float pos)
 {
     const float yc = faderY1 - (faderY1 - faderY0) * pos;
-    drawArt (g, faderCap, R (HW::faderCap).translated (0.0f, yc - HW::faderRefY));
+    drawArt (g, *faderCap, R (HW::faderCap).translated (0.0f, yc - HW::faderRefY));
 }
 
 void AnbuEditor::drawModeLamps (juce::Graphics& g, float flash)
 {
     float onAlpha = 1.0f;
     if (introRunning) onAlpha = lerp (0.35f, 1.0f, easeOut (((float) introT() - 1.762f) / 0.6f));
-    drawArt (g, lampC, R (HW::lampC), juce::jmax (modeLimit ? 0.0f : onAlpha, flash));
-    drawArt (g, lampL, R (HW::lampL), juce::jmax (modeLimit ? onAlpha : 0.0f, flash));
+    drawArt (g, *lampC, R (HW::lampC), juce::jmax (modeLimit ? 0.0f : onAlpha, flash));
+    drawArt (g, *lampL, R (HW::lampL), juce::jmax (modeLimit ? onAlpha : 0.0f, flash));
 }
 
 float AnbuEditor::meterFrac() const
@@ -926,8 +942,8 @@ void AnbuEditor::drawMeterDynamic (juce::Graphics& g)
     g.setColour (hex (0xf3e8d2));
     g.strokePath (nd, juce::PathStrokeType (1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), rot);
     g.restoreState();
-    drawArt (g, pivot, R (HW::pivot));
-    drawArt (g, glassMeter, faceR);
+    drawArt (g, *pivot, R (HW::pivot));
+    drawArt (g, *glassMeter, faceR);
 }
 
 juce::String AnbuEditor::readoutText() const
@@ -961,7 +977,7 @@ void AnbuEditor::drawDisplayDynamic (juce::Graphics& g)
     g.setColour (hex (0xf4eada));
     g.strokePath (tp, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     g.restoreState();
-    drawArt (g, glassDisp, screenR);
+    drawArt (g, *glassDisp, screenR);
 }
 
 void AnbuEditor::drawKeys (juce::Graphics& g)
@@ -971,7 +987,7 @@ void AnbuEditor::drawKeys (juce::Graphics& g)
     {
         const auto r = keyRect (i);
         if (! g.clipRegionIntersects (r.expanded (8.0f).getSmallestIntegerContainer())) continue;
-        if (keyState[(size_t) i]) drawArt (g, keyArt[(size_t) i], R (HW::keys[i]));
+        if (keyState[(size_t) i]) drawArt (g, *keyArt[(size_t) i], R (HW::keys[i]));
         const float flash = flashAt (keyFlashX (i));
         if (flash > 0.0f)
         {
@@ -997,7 +1013,7 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
     const float deb = easeIn ((t - 1.0f) / 0.65f);
 
     // the plate's own (debossed) logo appears as the travelling logo lands on it
-    drawArt (g, noLogo, R (HW::logoPatch), 1.0f - deb);
+    drawArt (g, *noLogo, R (HW::logoPatch), 1.0f - deb);
 
     // panel hidden behind the chassis colour until the logo leaves the centre
     float ov = 1.0f;
@@ -1075,15 +1091,16 @@ void AnbuEditor::paint (juce::Graphics& g)
 {
     const float s = scale();
     const float phys = s * g.getInternalContext().getPhysicalPixelScaleFactor();
-    if (! staticLayer.isValid() || std::abs (phys - staticScale) > 1.0e-3f || staticOut != proc.uiMeterOut)
+    if (! staticLayer.isValid() || std::abs (phys - staticScale) > 1.0e-3f || staticOut != proc.uiMeterOut || staticFast != (resizingSince > 0.0))
     {
         staticScale = phys;
+        staticFast = resizingSince > 0.0;
         staticOut = proc.uiMeterOut;
         staticLayer = juce::Image (juce::Image::ARGB, juce::roundToInt ((float) baseW * phys), juce::roundToInt ((float) baseH * phys), true);
         juce::Graphics gs (staticLayer);
         gs.addTransform (juce::AffineTransform::scale (phys));
         gs.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
-        renderStatic (gs, phys);
+        renderStatic (gs, staticFast ? HW::scale : phys);
     }
     g.addTransform (juce::AffineTransform::scale (s));
     g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
@@ -1306,8 +1323,21 @@ void AnbuEditor::updateTone()
 }
 
 // ============================================================================================ timer
+float AnbuEditor::artScale (juce::Graphics& g) const
+{
+    if (resizingSince > 0.0) return HW::scale;                       // live resize: the 2x art, scaled while drawing
+    return juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
+}
+
 void AnbuEditor::timerCallback()
 {
+    // a resize has settled: rebuild the art at the exact pixel scale
+    if (resizingSince > 0.0 && juce::Time::getMillisecondCounterHiRes() - resizingSince > 300.0)
+    {
+        resizingSince = 0.0;
+        repaint();
+    }
+
     // intro clock starts once the panel is actually on screen
     if (introRunning)
     {

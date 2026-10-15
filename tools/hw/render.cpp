@@ -145,7 +145,7 @@ int main (int argc, char** argv)
                 const bool an = aniso[i] > 0.5f;
                 if (an) { t1 = norm ({ tx[i], ty[i], 0.0f }); t1 = norm (t1 - n * dot (t1, n)); t2 = cross (n, t1); }
                 else { V3 a = std::fabs (n.x) < 0.9f ? V3 { 1, 0, 0 } : V3 { 0, 1, 0 }; t1 = norm (cross (a, n)); t2 = cross (n, t1); }
-                const float ax = an ? 0.06f : r * r, ay = an ? std::max (0.25f, r * r) : r * r;
+                const float ax = an ? std::max (0.06f, 0.5f * r * r) : r * r, ay = an ? std::max (0.25f, r * r) : r * r;
                 uint32_t seed = hash ((uint32_t) i * 9781u + 17u);
                 V3 spec { 0, 0, 0 };
                 const float nv = std::max (1e-3f, dot (n, v));

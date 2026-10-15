@@ -239,13 +239,19 @@ def screw(sc, cx, cy, slot_deg):
     sc.put(sl, m * slot, alb=hexc('0c0a0a'), rough=0.7, metal=0.3)
 
 def lamp_ring(sc, cx, cy, rr, lit=False):
+    """light pipe: a 270-degree arc over the knob's travel (7 o'clock to 5 o'clock), rounded ends"""
     g = sc.grid(cx - rr - 4, cy - rr - 4, cx + rr + 4, cy + rr + 4)
     if g is None: return
     sl, X, Y = g
-    rad = np.hypot(X - cx, Y - cy)
-    d = np.abs(rad - rr) - 1.4
-    m = sc.cov(d)
-    groove = sc.cov(np.abs(rad - rr) - 1.9)
+    dx, dy = X - cx, Y - cy
+    rad = np.hypot(dx, dy)
+    th = np.arctan2(dx, -dy)
+    end = math.radians(135)
+    e1 = (cx + rr * math.sin(-end), cy - rr * math.cos(-end)); e2 = (cx + rr * math.sin(end), cy - rr * math.cos(end))
+    dist = np.where(np.abs(th) <= end, np.abs(rad - rr),
+                    np.minimum(np.hypot(X - e1[0], Y - e1[1]), np.hypot(X - e2[0], Y - e2[1])))
+    groove = sc.cov(dist - 1.9)
+    m = sc.cov(dist - 1.4)
     sc.put(sl, groove, h=PLATE_H - 0.55, alb=hexc('150404'), rough=0.6)
     sc.put(sl, m, h=PLATE_H - 0.25, alb=hexc('3a1408'), rough=0.12, metal=0.0, emis=LAMP * 0.8 if lit else np.zeros(3))
 
@@ -281,13 +287,13 @@ def knob(sc, cx, cy, D, angle_deg, ridges):
     pw = max(1.4, 0.035 * D)
     pmask = sc.cov(np.maximum(np.abs(v) - pw / 2, np.maximum(0.18 * Rt - u, u - 0.86 * Rt)))
     h = h - 0.35 * pmask
-    sc.put(sl, m, h=h, alb=lin([78, 79, 86]), rough=0.3, metal=1.0)
+    sc.put(sl, m, h=h, alb=lin([56, 57, 62]), rough=0.42, metal=1.0)   # satin black anodised
     # spun top (anisotropic, grooves run around the centre)
     tm = top * (1 - np.clip((r - (Rt - c * 1.05)) * sc.k, 0, 1))
-    sc.put(sl, tm, alb=lin([118, 120, 128]), rough=0.3, metal=1.0, aniso=1.0, t=(-dy / (r + 1e-6), dx / (r + 1e-6)))
+    sc.put(sl, tm, alb=lin([82, 84, 90]), rough=0.45, metal=1.0, aniso=1.0, t=(-dy / (r + 1e-6), dx / (r + 1e-6)))
     # polished chamfer
     ring = top * np.clip((r - (Rt - c * 1.05)) * sc.k, 0, 1)
-    sc.put(sl, ring, alb=lin([200, 200, 206]), rough=0.14, metal=1.0, aniso=0.0)
+    sc.put(sl, ring, alb=lin([128, 128, 134]), rough=0.3, metal=1.0, aniso=0.0)
     sc.put(sl, pmask, alb=CREAM, rough=0.5, metal=0.0, aniso=0.0)
     # fine spin rings in the height (gives the circular sheen)
     spin = 0.006 * np.sin(r * sc.k * 2.1) * (top * (1 - e))

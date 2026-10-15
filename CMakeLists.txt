@@ -27,7 +27,6 @@ endif()
 set(ANBU_COMMON_DEFS
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0
     JUCE_VST3_CAN_REPLACE_VST2=0)
 
@@ -37,7 +36,7 @@ if(UNIX AND NOT APPLE)   # only for test builds in the Linux build environment
         JUCE_USE_XRENDER=0 JUCE_USE_XSHM=0 JUCE_ALSA=0 JUCE_JACK=0)
 endif()
 
-# Panel fonts (Catamaran, OFL), compiled into the plugin; the panel itself is drawn as vectors
+# Panel art (rendered by tools/hw) and fonts (Catamaran + Barlow Semi Condensed, OFL), compiled into the plugin
 file(GLOB ANBU_GUI_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/ui/* ${CMAKE_CURRENT_SOURCE_DIR}/Resources/hw/*)
 juce_add_binary_data(AnbuGui HEADER_NAME BinaryData.h NAMESPACE BinaryData SOURCES ${ANBU_GUI_FILES})
 set_target_properties(AnbuGui PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -72,6 +71,15 @@ if(ANBU_BUILD_TOOLS)
     target_include_directories(AnbuRender PRIVATE Source)
     target_compile_definitions(AnbuRender PRIVATE ${ANBU_COMMON_DEFS} JUCE_MODAL_LOOPS_PERMITTED=0)
     target_link_libraries(AnbuRender PRIVATE AnbuGui juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
+endif()
+
+# Robustness checks (sample rates, block sizes, layouts, automation, latency, state); run in CI
+if(ANBU_BUILD_TOOLS)
+    juce_add_console_app(AnbuStress PRODUCT_NAME "AnbuStress")
+    target_sources(AnbuStress PRIVATE Tests/AnbuStress.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
+    target_include_directories(AnbuStress PRIVATE Source)
+    target_compile_definitions(AnbuStress PRIVATE ${ANBU_COMMON_DEFS} JUCE_MODAL_LOOPS_PERMITTED=0)
+    target_link_libraries(AnbuStress PRIVATE AnbuGui juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
 endif()
 
 option(ANBU_BUILD_SNAPSHOT "Build the headless editor snapshot tool" OFF)

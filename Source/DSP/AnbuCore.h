@@ -115,6 +115,7 @@ public:
         rip_.lowpass(fs, RIP_FC, 0.7071);
         aLF_ = 1.0 - std::exp(-2 * kPi * CAP_LF / fs); aW_ = 1.0 - std::exp(-dt_ / 0.05);
         for (int c = 0; c < 2; ++c) for (int k = 0; k < 4; ++k) eq_[c][k].section(fs, c == 0 ? LIN_EQ_L[k] : LIN_EQ_R[k]);
+        eqG0_[0] = std::pow(10.0, LIN_EQ_G0[0] / 20.0); eqG0_[1] = std::pow(10.0, LIN_EQ_G0[1] / 20.0);
         reset();
     }
     double idleConductance() const noexcept { return Gidle_; }
@@ -144,8 +145,8 @@ public:
             eLF_ += aW_ * (lfy_ * lfy_ - eLF_); eAll_ += aW_ * (xm * xm - eAll_);
             capW[i] = std::max(std::pow(std::clamp(eLF_ / (eAll_ + 1e-15), 0.0, 1.0), CAP_K), 1e-4);
             // the sidechain sees the Color tone curve (the cell sits after it)
-            const double tl = eq_[0][3].run(eq_[0][2].run(eq_[0][1].run(eq_[0][0].run(l)))) * std::pow(10.0, LIN_EQ_G0[0] / 20.0);
-            const double trr = eq_[1][3].run(eq_[1][2].run(eq_[1][1].run(eq_[1][0].run(r)))) * std::pow(10.0, LIN_EQ_G0[1] / 20.0);
+            const double tl = eq_[0][3].run(eq_[0][2].run(eq_[0][1].run(eq_[0][0].run(l)))) * eqG0_[0];
+            const double trr = eq_[1][3].run(eq_[1][2].run(eq_[1][1].run(eq_[1][0].run(r)))) * eqG0_[1];
             l += toneAmt_ * (tl - l); r += toneAmt_ * (trr - r);
             const double sL = shL_.run(hpL_.run(l)), sR = shR_.run(hpR_.run(r));
             const double u = std::max(std::fabs(sL), std::fabs(sR));
@@ -175,7 +176,7 @@ public:
 private:
     double fs_ = 48000, dt_ = 1 / 48000.0, aA_ = 0, aR_ = 0, aM_ = 0;
     double k_ = 1, a_ = 1, invAsat2_ = 1, Pamp_ = 1, Gidle_ = 0, toneAmt_ = 0;
-    double env_ = 0, um_ = 0, G_[3] = { 0, 0, 0 }, aLF_ = 0, aW_ = 0, lfy_ = 0, eLF_ = 0, eAll_ = 0;
+    double env_ = 0, um_ = 0, G_[3] = { 0, 0, 0 }, aLF_ = 0, aW_ = 0, lfy_ = 0, eLF_ = 0, eAll_ = 0, eqG0_[2] = { 1, 1 };
     Biquad hpL_, hpR_, shL_, shR_, rip_, eq_[2][4];
 };
 
@@ -189,6 +190,7 @@ public:
         aEA_ = 1.0 - std::exp(-dt_ / ENV_A); aER_ = 1.0 - std::exp(-dt_ / ENV_R);
         Cn_ = 1.0 / (2 * kPi * CAP_FP);
         M_ = std::pow(10.0, MAKEUP_DB / 20.0);
+        eqG0_[0] = std::pow(10.0, LIN_EQ_G0[0] / 20.0); eqG0_[1] = std::pow(10.0, LIN_EQ_G0[1] / 20.0);
         for (int c = 0; c < 2; ++c) {
             ch_[c].hf0.peaking(fs_, HF0_F, 0.7, HF0_G);
             for (int k = 0; k < 4; ++k) ch_[c].eq[k].section(fs_, c == 0 ? LIN_EQ_L[k] : LIN_EQ_R[k]);
@@ -212,7 +214,6 @@ public:
         mu1_ = interpTableLog(MU1_TAB, pr_); mu2_ = interpTableLog(MU2_TAB, pr_); mu3_ = interpTable(MU3_TAB, pr_);
         bpr_ = interpTable(BPR_TAB, pr_);
         if (pr_ <= 0.0) { mu1_ = mu2_ = mu3_ = 0.0; }
-        eqG0_[0] = std::pow(10.0, LIN_EQ_G0[0] / 20.0); eqG0_[1] = std::pow(10.0, LIN_EQ_G0[1] / 20.0);
     }
     // G / Gslow are given at base rate for this block (nBase samples); audio has nBase*os samples.
     // harm (optional, nOS samples): mono sum of what the nonlinear stages add (for the display only).
@@ -250,7 +251,7 @@ public:
                 s.em2 += aE_ * (d2 - s.em2); s.em3 += aE_ * (d3 - s.em3);
                 const double tol = (c == 0 ? 1.0 : LA_TOL_MU);
                 const double dG = tol * (mu1_ * d1 + mu2_ * (d2 - s.em2) + mu3_ * (d3 - s.em3));
-                const double modg = (1.0 + Gc) / std::max(1.0 + Gc + dG, 1e-3);
+                const double modg = (1.0 + Gc) / std::max(1.0 + Gc + dG, 1.0);   // conductance stays >= 0: never louder than fully open
                 const double vin = s.hf0.run(s.bell2.run(s.bell.run(x)));
                 const double Rc1 = 1.0 + 1.0 / std::max(Gc, 1e-9);
                 const double k = 1.0 - std::exp(-dt_ / (Cn_ / capW[bi] * Rc1));
@@ -366,9 +367,9 @@ private:
 // ------------------------------------------------------------------------------------------ noise
 class NoiseGen {
 public:
-    void prepare(double fs) {
+    void prepare(double fs, unsigned seed) {
         fs_ = fs; ph_ = 0; tilt_[0].lp(fs, 6000.0); tilt_[1].lp(fs, 6000.0);
-        rng_.seed(0x52344E);
+        rng_.seed(seed);
     }
     // levelDb: hiss RMS in dBFS; hum sits 8 dB below the hiss (50 Hz mains and its harmonics)
     void add(float* L, float* R, int n, double levelDb) noexcept {

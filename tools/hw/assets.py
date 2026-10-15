@@ -143,8 +143,7 @@ def part_meter(binary, work):
     img, _ = render_region(binary, work, st, region)
     save_jpg(crop(img, region, face), 'face_out.jpg', 95)
     st = bg_state()
-    img, sc = render_region(binary, work, st, region)
-    save_jpg(crop(img, region, face), 'face_gr.jpg', 95)
+    img, sc = render_region(binary, work, st, region)       # GR face is part of the background
     # pivot dome with alpha
     px, py = hw.PIV
     prect = irect(px - 76, hw.FACE[1] + hw.FACE[3] - 16, px + 76, hw.FACE[1] + hw.FACE[3])

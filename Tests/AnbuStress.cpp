@@ -231,6 +231,31 @@ int main (int argc, char** argv)
         report (std::abs ((arg - 100) - lat) <= 1, juce::String::formatted ("bypass delay: measured %d, reported %d samples", arg - 100, lat));
     }
 
+    // 7a. Bypass and Mix 0 are bit-exact delayed copies of the input at every oversampling setting
+    for (int os = 0; os < 4; ++os)
+        for (int ph = 0; ph < 2; ++ph)
+            for (int useMix = 0; useMix < 2; ++useMix)
+            {
+                auto p = make (48000, 512);
+                setParam (*p, ids::os, (float) os); setParam (*p, ids::phase, (float) ph);
+                if (useMix) setParam (*p, ids::mix, 0.0f); else setParam (*p, ids::bypass, 1.0f);
+                juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+                for (int k = 0; k < 8; ++k) { b.clear(); p->processBlock (b, m); }        // settle smoothers
+                const int lat = p->getLatencySamples();
+                Signal sig { Signal::pink, 48000 };
+                std::vector<float> in, out;
+                for (int k = 0; k < 40; ++k)
+                {
+                    for (int i = 0; i < 512; ++i) { const float v = sig.next(); b.setSample (0, i, v); b.setSample (1, i, v); in.push_back (v); }
+                    p->processBlock (b, m);
+                    for (int i = 0; i < 512; ++i) out.push_back (b.getSample (0, i));
+                }
+                float maxErr = 0.0f;
+                for (size_t i = (size_t) lat + 4096; i < out.size(); ++i) maxErr = juce::jmax (maxErr, std::abs (out[i] - in[i - (size_t) lat]));
+                report (maxErr < 1.0e-6f, juce::String::formatted ("%s, OS %d %s: delayed copy of the input, max error %.1e",
+                                                                   useMix ? "Mix 0" : "Bypass", 1 << os, ph ? "linear" : "low lat", maxErr));
+            }
+
     // 7b. the plugin's own Bypass parameter: same delay as processing, and no jump when switching
     {
         auto p = make (48000, 512);

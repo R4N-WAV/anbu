@@ -96,9 +96,11 @@ void AnbuProcessor::rebuildOversampling (int idx, bool linear)
     if (activeOs != nullptr) activeOs->reset();
     const int factor = osFactorFromIndex (idx);
     audio.prepare (fs * factor, factor);
-    const float lat = activeOs != nullptr ? activeOs->getLatencyInSamples() : 0.0f;
-    setLatencySamples ((int) std::round (lat));
-    dryDelay.setDelay (lat);
+    // whole samples only: a fractional dry delay would need interpolation, which dulls the dry signal
+    // (Mix and Bypass); the reported latency and the dry delay are the same integer, so bypass is bit-exact
+    const int lat = activeOs != nullptr ? juce::roundToInt (activeOs->getLatencyInSamples()) : 0;
+    setLatencySamples (lat);
+    dryDelay.setDelay ((float) lat);
 }
 
 void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)

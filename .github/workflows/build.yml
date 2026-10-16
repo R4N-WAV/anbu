@@ -8,6 +8,8 @@ on:
 jobs:
   windows-vst3:
     runs-on: windows-2022
+    permissions:
+      contents: write          # publish the validated build as the "latest" release
     timeout-minutes: 60
     steps:
       - name: Get source
@@ -60,3 +62,14 @@ jobs:
           else { Write-Output "::warning::pluginval wrote no log" }
           if ($code -ne 0) { Write-Output "::error::pluginval failed (exit $code)"; exit 1 }
           Write-Output "pluginval passed"
+
+      - name: Publish as the latest release (validated builds from main only)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path dist/* -DestinationPath Anbu-VST3-Windows.zip -Force
+          gh release delete latest --yes --cleanup-tag 2>$null
+          $notes = "Latest validated Windows build (VST3, 64-bit) from commit ${{ github.sha }}.`n`nInstall: unzip, then copy the Anbu.vst3 folder into C:\Program Files\Common Files\VST3 and rescan plugins in your host. Full guide: INSTALL.md (also inside the zip)."
+          gh release create latest Anbu-VST3-Windows.zip --title "Anbu - latest build" --notes $notes --latest

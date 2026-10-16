@@ -65,12 +65,14 @@ SCREEN = (285, 323, 540, 210)
 BANK_OS = (280, 580, 280, 40)
 BANK_PH = (590, 580, 240, 40)
 NOISE_KEY = (889, 462, 64, 32)
-KEY_TEXT = ['OFF', '2×', '4×', '8×', 'LOW LATENCY', 'LINEAR', 'NOISE']
+KEY_TEXT = ['OFF', '2×', '4×', '8×', 'LOW LATENCY', 'LINEAR', 'NOISE', 'BYPASS']
+BYPASS_KEY = (896, 617, 50, 22)
 
 def key_rect(i):
     if i < 4: return (BANK_OS[0] + 4 + 69 * i, BANK_OS[1] + 4, 65, 32)
     if i < 6: return (BANK_PH[0] + 4 + 118 * (i - 4), BANK_PH[1] + 4, 114, 32)
-    return NOISE_KEY
+    if i == 6: return NOISE_KEY
+    return BYPASS_KEY
 
 def vu_frac(d): return (10 ** (d / 20) - 0.1) / (10 ** (3 / 20) - 0.1)
 def meter_angle(f): return -SPAN + 2 * SPAN * f
@@ -359,7 +361,7 @@ def key(sc, i, down, legend_lit):
     col = c0[None, None, :] * (1 - t) + c1[None, None, :] * t
     sc.put(sl, m, h=hh, alb=col, rough=0.3, metal=0.0)
     # legend
-    legm = sc.text_mask([dict(font=F_BAR6, size=11.5, text=KEY_TEXT[i], x=x + w / 2, y=y + h / 2 + (0.3 if down else 0), track=0.08)])
+    legm = sc.text_mask([dict(font=F_BAR6, size=9.5 if i == 7 else 11.5, text=KEY_TEXT[i], x=x + w / 2, y=y + h / 2 + (0.3 if down else 0), track=0.08)])
     if legend_lit:
         sc.ink(legm, KEYON * 0.6, raise_h=0.0, rough=0.4, emis=KEYON * 1.15)
     else:
@@ -516,7 +518,7 @@ def scale_ticks(sc, k):
 # ------------------------------------------------------------------ whole panel
 def default_state():
     return dict(knob_pos={'pr': 0.0, 'input': 0.5, 'output': 0.5, 'mix': 0.0, 'noise': 0.0},
-                keys_down=[False] * 7, keys_lit=[False] * 7, lamps=[False, False], lamp_rings={},
+                keys_down=[False] * 8, keys_lit=[False] * 8, lamps=[False, False], lamp_rings={},
                 out_mode=False, fader=None, knobs=True)
 
 def build(region, state, k=K):
@@ -607,7 +609,7 @@ def build(region, state, k=K):
     meter_face(sc, state['out_mode'])
     display(sc)
     bank(sc, BANK_OS); bank(sc, BANK_PH)
-    for i in range(7):
+    for i in range(8):
         key(sc, i, state['keys_down'][i], state['keys_lit'][i])
     return sc
 

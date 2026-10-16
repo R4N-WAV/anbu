@@ -17,6 +17,7 @@ inline constexpr auto noiseOn = "noiseOn";
 inline constexpr auto noiseLevel = "noiseLevel";
 inline constexpr auto os = "oversampling";
 inline constexpr auto phase = "osPhase";
+inline constexpr auto bypass = "bypass";
 }
 
 class AnbuProcessor : public juce::AudioProcessor
@@ -32,6 +33,7 @@ public:
     void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
     using AudioProcessor::processBlockBypassed;
+    juce::AudioProcessorParameter* getBypassParameter() const override { return apvts.getParameter (ids::bypass); }
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -71,6 +73,7 @@ public:
 
 private:
     void rebuildOversampling (int factorIndex, bool linearPhase);
+    void passThrough (juce::AudioBuffer<float>&);     // bypassed: input delayed by the latency, meters and display fed
     int osFactorFromIndex (int idx) const { return idx <= 0 ? 1 : (1 << idx); }
 
     double fs = 48000.0;
@@ -92,7 +95,7 @@ private:
     juce::AudioBuffer<float> dryBuf;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> dryDelay { 1 << 15 };
 
-    juce::SmoothedValue<float> inGain, outGain, mixAmt;
+    juce::SmoothedValue<float> inGain, outGain, mixAmt, bypassMix;
     juce::SmoothedValue<double, juce::ValueSmoothingTypes::Linear> prSmooth, colorSmooth;
     double vuMs = 0.0;
     static constexpr int anaSize = 1 << 15;

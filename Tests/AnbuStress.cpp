@@ -231,6 +231,40 @@ int main (int argc, char** argv)
         report (std::abs ((arg - 100) - lat) <= 1, juce::String::formatted ("bypass delay: measured %d, reported %d samples", arg - 100, lat));
     }
 
+    // 7b. the plugin's own Bypass parameter: same delay as processing, and no jump when switching
+    {
+        auto p = make (48000, 512);
+        setParam (*p, ids::os, 2.0f); setParam (*p, ids::phase, 1.0f); setParam (*p, ids::bypass, 1.0f);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+        b.clear(); p->processBlock (b, m); b.clear(); p->processBlock (b, m);
+        const int lat = p->getLatencySamples();
+        std::vector<float> y;
+        for (int k = 0; k < 4; ++k)
+        {
+            b.clear();
+            if (k == 0) { b.setSample (0, 100, 1.0f); b.setSample (1, 100, 1.0f); }
+            p->processBlock (b, m);
+            for (int i = 0; i < 512; ++i) y.push_back (b.getSample (0, i));
+        }
+        int arg = 0; for (int i = 1; i < (int) y.size(); ++i) if (std::abs (y[(size_t) i]) > std::abs (y[(size_t) arg])) arg = i;
+        report (std::abs ((arg - 100) - lat) <= 1 && std::abs (y[(size_t) arg] - 1.0f) < 0.05f,
+                juce::String::formatted ("Bypass parameter: passes the input, delay %d, reported %d samples", arg - 100, lat));
+        // toggling bypass on a running sine: the largest sample-to-sample step stays small (crossfade)
+        auto q = make (48000, 256);
+        setParam (*q, ids::pr, 60.0f);
+        float maxStep = 0.0f, last = 0.0f;
+        Signal sig { Signal::sine, 48000 };
+        for (int blk = 0; blk < 200; ++blk)
+        {
+            if (blk % 40 == 20) setParam (*q, ids::bypass, q->apvts.getRawParameterValue (ids::bypass)->load() > 0.5f ? 0.0f : 1.0f);
+            juce::AudioBuffer<float> bb (2, 256);
+            for (int i = 0; i < 256; ++i) { const float v = sig.next(); bb.setSample (0, i, v); bb.setSample (1, i, v); }
+            q->processBlock (bb, m);
+            for (int i = 0; i < 256; ++i) { const float v = bb.getSample (0, i); if (blk > 10) maxStep = juce::jmax (maxStep, std::abs (v - last)); last = v; }
+        }
+        report (maxStep < 0.12f, juce::String::formatted ("Bypass on/off on a running sine: largest step %.3f (crossfaded)", maxStep));
+    }
+
     // 8. automation storm: every parameter moved every block (incl. OS / phase / mode switching)
     {
         auto p = make (44100, 333);

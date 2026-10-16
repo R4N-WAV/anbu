@@ -27,6 +27,7 @@ APVTS::ParameterLayout AnbuProcessor::createLayout()
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::noiseLevel, 1 }, "Noise Level", NormalisableRange<float> (-120.0f, -60.0f, 1.0f), -96.0f,
                                                         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " dB"; })
                                                                                        .withValueFromStringFunction (num)));
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::bypass, 1 }, "Bypass", false));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::os, 1 }, "Oversampling", StringArray { "Off", "2x", "4x", "8x" }, 2));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::phase, 1 }, "OS Phase", StringArray { "Low Latency", "Linear" }, 0));
     return { p.begin(), p.end() };
@@ -75,7 +76,8 @@ void AnbuProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     side.prepare (fs);
     noise.prepare (fs, noiseSeed);
 
-    inGain.reset (fs, 0.03); outGain.reset (fs, 0.03); mixAmt.reset (fs, 0.03);
+    inGain.reset (fs, 0.03); outGain.reset (fs, 0.03); mixAmt.reset (fs, 0.03); bypassMix.reset (fs, 0.02);
+    bypassMix.setCurrentAndTargetValue (apvts.getRawParameterValue (ids::bypass)->load() > 0.5f ? 1.0f : 0.0f);
     prSmooth.reset (fs, 0.05); colorSmooth.reset (fs, 0.05);
     inGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue (ids::input)->load()));
     outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue (ids::output)->load()));
@@ -118,6 +120,15 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     const int osIdx = (int) apvts.getRawParameterValue (ids::os)->load();
     const bool linear = apvts.getRawParameterValue (ids::phase)->load() > 0.5f;
     if (osIdx != curOsIndex || linear != curLinear) rebuildOversampling (osIdx, linear);
+
+    // bypass: fully bypassed blocks only delay the input (by the current latency); switching crossfades over 20 ms
+    bypassMix.setTargetValue (apvts.getRawParameterValue (ids::bypass)->load() > 0.5f ? 1.0f : 0.0f);
+    if (bypassMix.getTargetValue() > 0.5f && ! bypassMix.isSmoothing())
+    {
+        passThrough (buffer);
+        return;
+    }
+
 
     // mono hosts: run the stereo engine on a duplicated channel
     const bool mono = buffer.getNumChannels() < 2;
@@ -196,8 +207,9 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     {
         const float g = outGain.getNextValue(), w = mixAmt.getNextValue();
         lastOutGain = g; lastMix = w;
-        L[i] = w * L[i] * g + (1.0f - w) * dL[i];
-        R[i] = w * R[i] * g + (1.0f - w) * dR[i];
+        const float b = bypassMix.getNextValue();
+        L[i] = (1.0f - b) * (w * L[i] * g + (1.0f - w) * dL[i]) + b * dL[i];
+        R[i] = (1.0f - b) * (w * R[i] * g + (1.0f - w) * dR[i]) + b * dR[i];
         ss += 0.5 * ((double) L[i] * L[i] + (double) R[i] * R[i]);
     }
 
@@ -230,8 +242,13 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 }
 
-// Host bypass: pass the input through, delayed by the reported latency so the track stays in time.
+// Host bypass (hosts that don't use the Bypass parameter): same as the plugin's own bypass.
 void AnbuProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    passThrough (buffer);
+}
+
+void AnbuProcessor::passThrough (juce::AudioBuffer<float>& buffer)
 {
     const int n = buffer.getNumSamples();
     const int nch = juce::jmin (2, buffer.getNumChannels());
@@ -241,9 +258,30 @@ void AnbuProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce
         for (int i = 0; i < n; ++i) { dryDelay.pushSample (c, x[i]); x[i] = dryDelay.popSample (c); }
     }
     for (int c = nch; c < buffer.getNumChannels(); ++c) buffer.clear (c, 0, n);
+
+    // meters and display keep showing the (unprocessed) signal
+    const float* L = buffer.getReadPointer (0);
+    const float* R = buffer.getReadPointer (nch > 1 ? 1 : 0);
+    double ss = 0.0;
+    for (int i = 0; i < n; ++i) ss += 0.5 * ((double) L[i] * L[i] + (double) R[i] * R[i]);
+    const double a = std::exp (-(double) n / (0.05 * fs));
+    vuMs = a * vuMs + (1.0 - a) * ss / juce::jmax (1, n);
+    meterVuDb.store ((float) (10.0 * std::log10 (vuMs + 1e-20) + 18.0));
     meterGrDb.store (0.0f);
-    vuMs = 0.0;
-    meterVuDb.store (-100.0f);
+    const auto scope = anaFifo.write (n);
+    int k = 0;
+    for (int b = 0; b < 2; ++b)
+    {
+        const int start = b == 0 ? scope.startIndex1 : scope.startIndex2;
+        const int m = b == 0 ? scope.blockSize1 : scope.blockSize2;
+        for (int j = 0; j < m; ++j, ++k)
+        {
+            const float v = 0.5f * (L[k] + R[k]);
+            anaBuf[0][(size_t) (start + j)] = v;
+            anaBuf[1][(size_t) (start + j)] = v;
+            anaBuf[2][(size_t) (start + j)] = 0.0f;
+        }
+    }
 }
 
 int AnbuProcessor::pullAnalyser (float* out, float* in, float* harm, int maxSamples)

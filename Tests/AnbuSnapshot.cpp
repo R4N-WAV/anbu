@@ -69,6 +69,11 @@ int main (int argc, char** argv)
     }
     std::printf ("meter after run: GR %.2f dB, VU %.2f\n", p.meterGrDb.load(), p.meterVuDb.load());
     if (mode != "clean") ae->freezeMeters (-3.0f, 4.5f);
+    if (mode.startsWith ("bypass="))   // bypass=<progress>,<seconds>: a frame of the colour drain
+    {
+        const auto v = juce::StringArray::fromTokens (mode.fromFirstOccurrenceOf ("=", false, false), ",", "");
+        ae->setBypassFrame (v[0].getFloatValue(), v.size() > 1 ? v[1].getDoubleValue() : 0.0);
+    }
     if (mode.startsWith ("intro=")) ae->setIntroFrame (mode.fromFirstOccurrenceOf ("=", false, false).getDoubleValue());
     if (mode == "readout" || mode == "analyser") ae->setReadout (2);
     for (int i = 0; i < 4; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (17);
@@ -103,6 +108,18 @@ int main (int argc, char** argv)
     auto t1 = juce::Time::getMillisecondCounterHiRes();
     writePng (img, f);
     std::printf ("wrote %s %dx%d (full paint %.1f ms)\n", f.getFullPathName().toRawUTF8(), img.getWidth(), img.getHeight(), t1 - t0);
+
+    if (mode.startsWith ("bypass="))   // per-frame cost of the drain animation
+    {
+        const auto v = juce::StringArray::fromTokens (mode.fromFirstOccurrenceOf ("=", false, false), ",", "");
+        const auto t2 = juce::Time::getMillisecondCounterHiRes();
+        for (int i = 0; i < 20; ++i)
+        {
+            ae->setBypassFrame (juce::jlimit (0.0f, 1.0f, v[0].getFloatValue() + 0.01f * (float) i), 0.016 * i);
+            auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, scale);
+        }
+        std::printf ("drain frame: %.1f ms per full frame\n", (juce::Time::getMillisecondCounterHiRes() - t2) / 20.0);
+    }
 
     // second paint (static layer cached) for a timing figure
     if (mode == "panel")

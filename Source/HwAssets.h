@@ -13,7 +13,7 @@ inline constexpr KnobArt knobs[5] = {
     { "mix", "knob_mix_jpg", "ring_mix_jpg", 921.0f, 364.0f, 27.0f, 36.0f, false, 101, { 893, 336, 56, 56 }, { 869, 312, 104, 104 } },
     { "noise", "knob_noise_jpg", "ring_noise_jpg", 921.0f, 556.0f, 20.0f, 28.0f, false, 61, { 900, 535, 42, 42 }, { 877, 512, 88, 88 } } };
 inline constexpr Rect lampC { 40, 592, 33, 33 }, lampL { 40, 629, 33, 32 };
-inline constexpr Rect keys[7] = { { 282, 582, 69, 36 }, { 351, 582, 69, 36 }, { 420, 582, 69, 36 }, { 489, 582, 69, 36 }, { 592, 582, 118, 36 }, { 710, 582, 118, 36 }, { 887, 460, 68, 36 } };
+inline constexpr Rect keys[8] = { { 282, 582, 69, 36 }, { 351, 582, 69, 36 }, { 420, 582, 69, 36 }, { 489, 582, 69, 36 }, { 592, 582, 118, 36 }, { 710, 582, 118, 36 }, { 887, 460, 68, 36 }, { 894, 615, 54, 26 } };
 inline constexpr Rect faderCap { 104, 415, 64, 54 };
 inline constexpr float faderRefY = 439.0f;
 inline constexpr Rect face { 288, 56, 534, 236 }, screen { 285, 323, 540, 210 };

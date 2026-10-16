@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <cstring>
 #include "HwAssets.h"
 #include "BinaryData.h"
 
@@ -289,7 +290,8 @@ juce::Rectangle<float> keyRect (int i)
 {
     if (i < 4) return { 284.0f + 69.0f * (float) i, 584.0f, 65.0f, 32.0f };
     if (i < 6) return { 594.0f + 118.0f * (float) (i - 4), 584.0f, 114.0f, 32.0f };
-    return { 889.0f, 462.0f, 64.0f, 32.0f };
+    if (i == 6) return { 889.0f, 462.0f, 64.0f, 32.0f };
+    return { 896.0f, 617.0f, 50.0f, 22.0f };      // bypass
 }
 float keyFlashX (int i) { return i < 4 ? 300.0f + 70.0f * (float) i : i < 6 ? 610.0f + 120.0f * (float) (i - 4) : 921.0f; }
 
@@ -631,7 +633,7 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     lampC = &library->get ("lamp_c_png");
     lampL = &library->get ("lamp_l_png");
     noLogo = &library->get ("nologo_jpg");
-    for (int i = 0; i < 7; ++i) keyArt[(size_t) i] = &library->get (("key_" + juce::String (i) + "_png").toRawUTF8());
+    for (int i = 0; i < 8; ++i) keyArt[(size_t) i] = &library->get (("key_" + juce::String (i) + "_png").toRawUTF8());
 
     for (int k = 0; k < 5; ++k)
     {
@@ -687,7 +689,9 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
         spec.freqs[(size_t) i] = 20.0 * std::pow (1000.0, (double) i / (Spectrum::nPts - 1));
     spec.out.fill (-140.0f); spec.in.fill (-140.0f); spec.harm.fill (-140.0f); spec.peak.fill (-140.0f); spec.tone.fill (0.0f);
 
-    for (int i = 0; i < 7; ++i) keyState[(size_t) i] = keyOn (i);
+    for (int i = 0; i < 8; ++i) keyState[(size_t) i] = keyOn (i);
+    greyTarget = keyState[7];
+    greyP = greyTarget ? 1.0f : 0.0f;
     modeLimit = (int) std::lround (proc.apvts.getRawParameterValue (ids::mode)->load()) == 1;
     grDb = proc.meterGrDb.load();
     needlePos = meterFrac();
@@ -983,7 +987,7 @@ void AnbuEditor::drawDisplayDynamic (juce::Graphics& g)
 void AnbuEditor::drawKeys (juce::Graphics& g)
 {
     const auto& T = theme();
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         const auto r = keyRect (i);
         if (! g.clipRegionIntersects (r.expanded (8.0f).getSmallestIntegerContainer())) continue;
@@ -1089,6 +1093,39 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
 // ============================================================================================ paint
 void AnbuEditor::paint (juce::Graphics& g)
 {
+    const float p = greyProgress();
+    if (p <= 0.0005f) { paintPanel (g); return; }
+
+    // bypassed or draining: paint the panel offscreen, then pull the colour out of it
+    const float dpr = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    const auto clip = g.getClipBounds().getIntersection (getLocalBounds());
+    if (clip.isEmpty()) return;
+    const int w = juce::jmax (1, (int) std::ceil ((float) clip.getWidth() * dpr)), h = juce::jmax (1, (int) std::ceil ((float) clip.getHeight() * dpr));
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const bool sizeChanged = fxSrc.getWidth() != w || fxSrc.getHeight() != h;
+    if (sizeChanged)
+    {
+        fxSrc = juce::Image (juce::Image::ARGB, w, h, false, juce::SoftwareImageType());
+        fxDst = juce::Image (juce::Image::ARGB, w, h, false, juce::SoftwareImageType());
+    }
+    // while the colour drains, the painted panel is reused for a few frames (the effect itself runs every frame)
+    const bool reuse = greyStart >= 0.0 && ! sizeChanged && clip == fxClip && now - fxPainted < 70.0;
+    if (! reuse)
+    {
+        juce::Graphics gi (fxSrc);
+        gi.addTransform (juce::AffineTransform::translation ((float) -clip.getX(), (float) -clip.getY()).scaled (dpr));
+        paintPanel (gi);
+        fxPainted = now;
+        fxClip = clip;
+    }
+    const double t = greyFixedT >= 0.0 ? greyFixedT : (greyStart >= 0.0 ? (juce::Time::getMillisecondCounterHiRes() - greyStart) * 0.001 : 0.0);
+    applyGrey (fxSrc, fxDst, clip, dpr, p, t);
+    g.drawImageTransformed (fxDst, juce::AffineTransform::scale ((float) clip.getWidth() / (float) w, (float) clip.getHeight() / (float) h)
+                                       .translated ((float) clip.getX(), (float) clip.getY()));
+}
+
+void AnbuEditor::paintPanel (juce::Graphics& g)
+{
     const float s = scale();
     const float phys = s * g.getInternalContext().getPhysicalPixelScaleFactor();
     if (! staticLayer.isValid() || std::abs (phys - staticScale) > 1.0e-3f || staticOut != proc.uiMeterOut || staticFast != (resizingSince > 0.0))
@@ -1128,18 +1165,163 @@ void AnbuEditor::paint (juce::Graphics& g)
         drawIntroOverlay (g);
 }
 
+// ============================================================================================ bypass colour drain
+namespace
+{
+constexpr float drainMs = 900.0f;                         // one full drain (or return) takes 0.9 s
+const juce::Point<float> drainCentre { 921.0f, 628.0f };  // the bypass key
+const juce::Rectangle<float> drainKeep { 894.0f, 615.0f, 54.0f, 26.0f };   // the key keeps its colour
+}
+
+static double greyDurationMs (float from, bool toGrey)
+{
+    return drainMs * juce::jmax (0.35f, std::abs ((toGrey ? 1.0f : 0.0f) - from));
+}
+
+void AnbuEditor::startGrey (bool toGrey)
+{
+    greyFrom = greyProgress();
+    greyTarget = toGrey;
+    greyStart = juce::Time::getMillisecondCounterHiRes();
+    greyFixedT = -1.0;
+}
+
+float AnbuEditor::greyProgress() const
+{
+    if (greyStart < 0.0) return greyP;
+    const float target = greyTarget ? 1.0f : 0.0f;
+    const float u = (float) ((juce::Time::getMillisecondCounterHiRes() - greyStart) / greyDurationMs (greyFrom, greyTarget));
+    // slow start, a fast pull, a soft landing
+    return greyFrom + (target - greyFrom) * bezier (0.6f, 0.0f, 0.3f, 1.0f, u);
+}
+
+void AnbuEditor::setBypassFrame (float progress, double seconds)
+{
+    greyStart = -1.0;
+    greyP = juce::jlimit (0.0f, 1.0f, progress);
+    greyFixedT = seconds;
+    repaint();
+}
+
+// src/dst: the clip region at device resolution. p: 0 = full colour, 1 = fully grey.
+void AnbuEditor::applyGrey (const juce::Image& src, juce::Image& dst, juce::Rectangle<int> clip, float dpr, float p, double t)
+{
+    const float s = scale();
+    const float pxPerUnit = s * dpr;
+    // angle of every device pixel around the key (cached per window size)
+    const int W = juce::roundToInt ((float) getWidth() * dpr), H = juce::roundToInt ((float) getHeight() * dpr);
+    if (W != cacheW || H != cacheH || std::abs (dpr - cacheDpr) > 1.0e-3f)
+    {
+        cacheW = W; cacheH = H; cacheDpr = dpr;
+        angleCache.assign ((size_t) W * (size_t) H, 0);
+        for (int y = 0; y < H; ++y)
+        {
+            const float dy = ((float) y + 0.5f) / pxPerUnit - drainCentre.y;
+            for (int x = 0; x < W; ++x)
+            {
+                const float dx = ((float) x + 0.5f) / pxPerUnit - drainCentre.x;
+                const float a = std::atan2 (dy, dx);       // -pi .. pi
+                angleCache[(size_t) y * (size_t) W + (size_t) x] = (juce::uint16) (((a + juce::MathConstants<float>::pi) / juce::MathConstants<float>::twoPi) * 1023.999f);
+            }
+        }
+    }
+
+    // the drain front: a radius per direction, wobbling with tendrils that change shape while it moves
+    constexpr int nA = 1024;
+    float Rtab[nA];
+    const float edge = 22.0f, smear = 20.0f;                // design units
+    const float Dmax = 1120.0f;                             // farthest corner from the key
+    const float Rb = p * (Dmax + 2.0f * edge);
+    const float A = 0.42f * std::pow (juce::jmax (0.0f, std::sin (juce::MathConstants<float>::pi * juce::jlimit (0.0f, 1.0f, p))), 0.8f);
+    const float tt = (float) t;
+    for (int a = 0; a < nA; ++a)
+    {
+        const float th = juce::MathConstants<float>::twoPi * (float) a / (float) nA;
+        float f = 0.30f * std::sin (2.0f * th + 1.3f * tt)
+                + 0.55f * std::sin (3.0f * th + 2.1f * tt + 0.7f)
+                + 0.35f * std::sin (5.0f * th - 3.3f * tt + 1.9f)
+                + 0.25f * std::sin (8.0f * th + 4.7f * tt + 0.3f)
+                + 0.18f * std::sin (13.0f * th - 6.1f * tt + 2.6f);
+        f /= 1.63f;
+        f = (f >= 0.0f ? 1.0f : -1.0f) * std::pow (std::abs (f), 0.65f);   // sharpen into tendrils
+        Rtab[a] = Rb * (1.0f + A * f);
+    }
+
+    const juce::Image::BitmapData in (src, juce::Image::BitmapData::readOnly);
+    juce::Image::BitmapData out (dst, juce::Image::BitmapData::writeOnly);
+    const int w = in.width, h = in.height;
+    const int ox = juce::roundToInt ((float) clip.getX() * dpr), oy = juce::roundToInt ((float) clip.getY() * dpr);
+    auto grey = [] (const juce::uint8* c, float& r, float& g, float& b)
+    {
+        const float l = 0.2126f * c[2] + 0.7152f * c[1] + 0.0722f * c[0];       // ARGB in memory: B G R A
+        const float v = juce::jlimit (0.0f, 255.0f, (l - 128.0f) * 1.06f + 128.0f);
+        r = g = b = v;
+    };
+    float Rmin = Rtab[0], Rmax = Rtab[0];
+    for (int a = 1; a < nA; ++a) { Rmin = juce::jmin (Rmin, Rtab[a]); Rmax = juce::jmax (Rmax, Rtab[a]); }
+    const float Rinner = Rmin - edge;                       // everything closer is fully grey
+    for (int y = 0; y < h; ++y)
+    {
+        const int ay = juce::jlimit (0, cacheH - 1, oy + y);
+        const float Y = ((float) ay + 0.5f) / pxPerUnit, dy = Y - drainCentre.y;
+        const auto* srow = in.getLinePointer (y);
+        auto* drow = out.getLinePointer (y);
+        std::memcpy (drow, srow, (size_t) (w * in.pixelStride));      // untouched by default
+        if (std::abs (dy) >= Rmax) continue;
+        // only the part of the row the front can reach this frame
+        const float half = std::sqrt (Rmax * Rmax - dy * dy);
+        const int x0 = juce::jmax (0, (int) std::floor ((drainCentre.x - half) * pxPerUnit) - ox - 1);
+        const int x1 = juce::jmin (w, (int) std::ceil ((drainCentre.x + half) * pxPerUnit) - ox + 1);
+        for (int x = x0; x < x1; ++x)
+        {
+            const int ax = juce::jlimit (0, cacheW - 1, ox + x);
+            const float X = ((float) ax + 0.5f) / pxPerUnit, dx = X - drainCentre.x;
+            const auto* sp = srow + x * in.pixelStride;
+            auto* dp = drow + x * out.pixelStride;
+            if (drainKeep.contains (X, Y)) { dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; continue; }
+            const float d = std::sqrt (dx * dx + dy * dy);
+            if (d < Rinner)
+            {
+                float r, g, b; grey (sp, r, g, b);
+                dp[0] = (juce::uint8) b; dp[1] = (juce::uint8) g; dp[2] = (juce::uint8) r; dp[3] = sp[3];
+                continue;
+            }
+            const float e = (Rtab[angleCache[(size_t) ay * (size_t) cacheW + (size_t) ax]] - d) / edge;
+            if (e <= 0.0f) { dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; continue; }
+            if (e >= 1.0f)
+            {
+                float r, g, b; grey (sp, r, g, b);
+                dp[0] = (juce::uint8) b; dp[1] = (juce::uint8) g; dp[2] = (juce::uint8) r; dp[3] = sp[3];
+                continue;
+            }
+            // in the front: colour is pulled in towards the key (sampled from further out) and drained
+            const float k = std::sin (juce::MathConstants<float>::pi * e) * smear * pxPerUnit / juce::jmax (d, 1.0f);   // strongest mid-front, none at its edges
+            const int sx = juce::jlimit (0, w - 1, x + juce::roundToInt (dx * k)), sy = juce::jlimit (0, h - 1, y + juce::roundToInt (dy * k));
+            const auto* cp = in.getPixelPointer (sx, sy);
+            float r, g, b; grey (cp, r, g, b);
+            const float m = e * e * (3.0f - 2.0f * e);
+            const float rim = 1.0f - 0.22f * std::sin (juce::MathConstants<float>::pi * e);
+            dp[0] = (juce::uint8) juce::jlimit (0.0f, 255.0f, (cp[0] + m * (b - cp[0])) * rim);
+            dp[1] = (juce::uint8) juce::jlimit (0.0f, 255.0f, (cp[1] + m * (g - cp[1])) * rim);
+            dp[2] = (juce::uint8) juce::jlimit (0.0f, 255.0f, (cp[2] + m * (r - cp[2])) * rim);
+            dp[3] = cp[3];
+        }
+    }
+}
+
 // ============================================================================================ interaction
 bool AnbuEditor::keyOn (int i) const
 {
     auto v = [this] (const char* id) { return (int) std::lround (proc.apvts.getRawParameterValue (id)->load()); };
     if (i < 4) return v (ids::os) == i;
     if (i < 6) return v (ids::phase) == i - 4;
-    return v (ids::noiseOn) != 0;
+    if (i == 6) return v (ids::noiseOn) != 0;
+    return v (ids::bypass) != 0;
 }
 
 int AnbuEditor::keyAt (juce::Point<float> p) const
 {
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
         if (keyRect (i).contains (p)) return i;
     return -1;
 }
@@ -1158,7 +1340,8 @@ void AnbuEditor::clickKey (int i)
 {
     if (i < 4) setChoice (ids::os, i);
     else if (i < 6) setChoice (ids::phase, i - 4);
-    else setChoice (ids::noiseOn, keyOn (6) ? 0 : 1);
+    else if (i == 6) setChoice (ids::noiseOn, keyOn (6) ? 0 : 1);
+    else setChoice (ids::bypass, keyOn (7) ? 0 : 1);
 }
 
 void AnbuEditor::toggleMeterMode (bool out)
@@ -1347,10 +1530,18 @@ void AnbuEditor::timerCallback()
     }
 
     // keys and mode (host automation or clicks)
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         const bool on = keyOn (i);
         if (on != keyState[(size_t) i]) { keyState[(size_t) i] = on; repaintDesign (keyRect (i).expanded (8.0f)); }
+    }
+    // bypass (panel key or the host's bypass): drain the colour / let it flow back
+    if (keyState[7] != greyTarget) startGrey (keyState[7]);
+    if (greyStart >= 0.0)
+    {
+        greyP = greyProgress();
+        if (juce::Time::getMillisecondCounterHiRes() - greyStart > greyDurationMs (greyFrom, greyTarget)) { greyP = greyTarget ? 1.0f : 0.0f; greyStart = -1.0; }
+        repaint();
     }
     const bool lim = (int) std::lround (proc.apvts.getRawParameterValue (ids::mode)->load()) == 1;
     if (lim != modeLimit) { modeLimit = lim; repaintDesign (modeArea); }

@@ -21,6 +21,7 @@ and works in any VST3 host.
 | Compress / Limit | Mode. Click the round button to switch, or click the word. |
 | Noise + Noise level | Optional hiss with a little 50 Hz hum, from −120 to −60 dBFS. Every instance hisses differently. |
 | Oversampling | Off / 2× / 4× / 8×. 4× is the normal setting. |
+| Bypass | The small key under Noise level (also linked to your host's bypass). Passes the input through with the same delay, crossfaded so it never clicks. |
 | Phase | Low latency (a few samples of delay) or Linear (cleaner phase, about 1.3 ms of delay at 48 kHz). |
 
 All controls move in whole steps. The plugin reports its delay to the host, also when bypassed, so tracks stay in time.
@@ -29,6 +30,7 @@ All controls move in whole steps. The plugin reports its delay to the host, also
 - **Start-up:** the first time a new Anbu opens, அ lights up, grows into the logo and settles into the plate while a wave of light runs across the panel. Click anywhere to skip it. It plays once per plugin instance.
 - **Knobs and fader:** drag up/down. Double-click = default. Mouse wheel works. While you move one, its name and value show in the display. The lamp ring around a knob follows its value and is dark at the knob's zero; Input and Output light from 0 dB outwards.
 - **Keys:** click. The pressed key sits lower and its legend lights up.
+- **Bypass:** the colour drains out of the panel into the Bypass key; switching back pours it out again (under a second each way).
 - **Needle meter:** click *GR* or *OUT* on the meter face. GR shows gain reduction, read from right to left (rests at 0 on the right, 20 dB at the left). It is zeroed at idle, so high Peak reduction settings read 0 with no signal. OUT shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
 - **Display:** beige = output spectrum; orange = the harmonics and distortion Anbu adds, at their true level (at Peak reduction 0 and Color 0 they sit about 50 dB below the signal); white line = Anbu's tone curve at the current settings.
 - **Analyser window:** the arrows in the display's corner open a larger analyser in its own window (also input, peak hold and a 60/90 dB range). Drag its top bar to move it, the corner to resize, × to close.

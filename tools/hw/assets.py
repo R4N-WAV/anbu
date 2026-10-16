@@ -100,8 +100,8 @@ def key_sprite_rect(i):
     return irect(x - 2, y - 2, x + w + 2, y + h + 2)
 
 def part_keys(binary, work):
-    st = bg_state(); st['keys_down'] = [True] * 7; st['keys_lit'] = [True] * 7
-    for group in ((0, 1, 2, 3, 4, 5), (6,)):
+    st = bg_state(); st['keys_down'] = [True] * 8; st['keys_lit'] = [True] * 8
+    for group in ((0, 1, 2, 3, 4, 5), (6,), (7,)):
         rects = [key_sprite_rect(i) for i in group]
         x0 = min(r[0] for r in rects); y0 = min(r[1] for r in rects)
         x1 = max(r[0] + r[2] for r in rects); y1 = max(r[1] + r[3] for r in rects)
@@ -197,8 +197,8 @@ def header():
     lines.append('inline constexpr KnobArt knobs[5] = {\n' + ',\n'.join(ks) + ' };')
     lc, ll = lamp_rect(hw.LAMP_YC), lamp_rect(hw.LAMP_YL)
     lines.append(f'inline constexpr Rect lampC {{ {lc[0]}, {lc[1]}, {lc[2]}, {lc[3]} }}, lampL {{ {ll[0]}, {ll[1]}, {ll[2]}, {ll[3]} }};')
-    kr = [key_sprite_rect(i) for i in range(7)]
-    lines.append('inline constexpr Rect keys[7] = { ' + ', '.join(f'{{ {r[0]}, {r[1]}, {r[2]}, {r[3]} }}' for r in kr) + ' };')
+    kr = [key_sprite_rect(i) for i in range(8)]
+    lines.append('inline constexpr Rect keys[8] = { ' + ', '.join(f'{{ {r[0]}, {r[1]}, {r[2]}, {r[3]} }}' for r in kr) + ' };')
     fr, yc = fader_rect()
     lines.append(f'inline constexpr Rect faderCap {{ {fr[0]}, {fr[1]}, {fr[2]}, {fr[3]} }};')
     lines.append(f'inline constexpr float faderRefY = {yc}f;')

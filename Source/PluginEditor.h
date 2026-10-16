@@ -68,6 +68,7 @@ public:
     void freezeMeters (float vuDb, float grDb);
     void skipIntro();
     void setIntroFrame (double seconds);     // render a fixed frame of the start-up
+    void setBypassFrame (float progress, double seconds);   // fixed frame of the colour drain (0 = colour, 1 = grey)
     void setReadout (int knob);
     std::unique_ptr<juce::Component> makeAnalyserView();
 
@@ -116,9 +117,24 @@ private:
     void drawDisplayDynamic (juce::Graphics&);
     void drawKeys (juce::Graphics&);
     void drawIntroOverlay (juce::Graphics&);
+    void paintPanel (juce::Graphics&);
+
+    // bypass: the colour drains into the bypass key (and flows back out)
+    float greyProgress() const;
+    void startGrey (bool toGrey);
+    void applyGrey (const juce::Image& src, juce::Image& dst, juce::Rectangle<int> clip, float dpr, float p, double t);
+    float greyP = 0.0f, greyFrom = 0.0f;
+    bool greyTarget = false;
+    double greyStart = -1.0, greyFixedT = -1.0;
+    std::vector<juce::uint16> angleCache;
+    int cacheW = 0, cacheH = 0;
+    float cacheDpr = 0.0f;
+    juce::Image fxSrc, fxDst;
+    juce::Rectangle<int> fxClip;
+    double fxPainted = 0.0;
 
     // interaction
-    int keyAt (juce::Point<float>) const;          // 0-3 oversampling, 4-5 phase, 6 noise, -1 none
+    int keyAt (juce::Point<float>) const;          // 0-3 oversampling, 4-5 phase, 6 noise, 7 bypass, -1 none
     bool keyOn (int) const;
     void clickKey (int);
     void setChoice (const char* id, int index);
@@ -149,7 +165,7 @@ private:
     juce::SharedResourcePointer<anbu::ui::ArtLibrary> library;
     anbu::ui::Art *bg = nullptr, *faceOut = nullptr, *pivot = nullptr, *glassMeter = nullptr, *glassDisp = nullptr,
                   *faderCap = nullptr, *lampC = nullptr, *lampL = nullptr, *noLogo = nullptr;
-    std::array<anbu::ui::Art*, 7> keyArt {};
+    std::array<anbu::ui::Art*, 8> keyArt {};
 
     juce::Image staticLayer;
     float staticScale = 0.0f;
@@ -162,7 +178,7 @@ private:
     float vuDb = -60.0f, grDb = 0.0f, needlePos = 0.0f, needleVel = 0.0f, drawnNeedle = -1.0f;
 
     // keys
-    std::array<bool, 7> keyState {};
+    std::array<bool, 8> keyState {};
     bool modeLimit = false;
 
     // intro

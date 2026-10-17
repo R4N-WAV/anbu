@@ -105,7 +105,7 @@ jobs:
       - name: Robustness checks (Apple Silicon)
         run: build/AnbuStress_artefacts/Release/AnbuStress quick
 
-      - name: Package (installer + plugin bundles + INSTALL.md)
+      - name: Package (installer + INSTALL.md)
         run: packaging/mac/package.sh build
 
       - name: Keep the zip (for the release and the Intel test)

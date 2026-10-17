@@ -18,7 +18,6 @@ Downloads: `Anbu-VST3-Windows.zip` and `Anbu-macOS.zip`, from the
 Anbu isn't notarized by Apple (that needs a paid Apple developer account), so the first time macOS
 asks you to allow it. This is a one-time step.
 
-**With the installer (recommended)**
 1. Double-click `Anbu-macOS.zip` to unzip it, then double-click **Install Anbu.pkg**.
 2. macOS says it can't verify the installer: click **Done** (or **OK**). Open **System Settings → Privacy & Security**,
    scroll down to *“Install Anbu.pkg” was blocked* and click **Open Anyway**, then confirm with your password.
@@ -31,15 +30,7 @@ asks you to allow it. This is a one-time step.
    - FL Studio: **Options → Manage plugins → Find installed plugins**.
    - Ableton Live: Settings → Plug-Ins → turn on **Use VST3 Plug-In System Folders** → **Rescan**.
 
-**By hand (without the installer)**
-1. Unzip, open the folder **Manual install**.
-2. In Finder choose **Go → Go to Folder…**, enter `~/Library/Audio/Plug-Ins` and copy
-   `Anbu.vst3` into the `VST3` folder and `Anbu.component` into the `Components` folder (create them if missing).
-3. Open **Terminal** and run this once (it removes the “downloaded from the internet” flag that makes macOS block the plugin):
-   ```
-   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Anbu.vst3 ~/Library/Audio/Plug-Ins/Components/Anbu.component
-   ```
-4. Restart your host or rescan plugins (step 4 above).
+To uninstall, delete those two files (Finder: **Go → Go to Folder…**, `/Library/Audio/Plug-Ins`).
 
 ## Controls
 | Control | What it does |
@@ -74,11 +65,11 @@ All controls move in whole steps. The plugin reports its delay to the host, also
 **Mac**
 - **The host doesn't list Anbu:** restart the host (Logic Pro and GarageBand only look for new Audio Units at start-up), then rescan.
   Still missing: log out of macOS and back in, which refreshes the Audio Unit list.
-- **“Anbu is damaged and can't be opened” or “Apple could not verify Anbu”:** the files still carry the download flag
-  (this happens with the manual install). Run the `xattr` command from the manual install, step 3.
-  For files put there by the installer: `sudo xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component`
-- **Two Anbus in the list:** you installed both by hand and with the installer. Delete one copy
-  (`~/Library/Audio/Plug-Ins/...` or `/Library/Audio/Plug-Ins/...`).
+- **No “Open Anyway” button:** it shows up in Privacy & Security for about an hour after macOS blocked the installer.
+  Double-click the pkg again, then look again.
+- **“Anbu is damaged and can't be opened” or “Apple could not verify Anbu”:** this shouldn't happen with the installer.
+  If it does, run in Terminal:
+  `sudo xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component`
 
 ## Building from source
 Requirements: CMake 3.22+, a C++17 compiler (Visual Studio 2022 on Windows, Xcode or its command line tools on Mac).

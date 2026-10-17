@@ -1,6 +1,6 @@
 #!/bin/bash
 # Packs the Mac build into Anbu-macOS.zip: an installer (Install Anbu.pkg) for both formats,
-# the plugin bundles for a manual install, and INSTALL.md.
+# and INSTALL.md.
 # usage (from the repository root, after building Anbu_VST3 and Anbu_AU in Release):
 #   packaging/mac/package.sh [build dir, default: build]
 # Needs the Xcode command line tools (codesign, pkgbuild, productbuild, ditto).
@@ -19,18 +19,16 @@ for b in "$art/VST3/Anbu.vst3" "$art/AU/Anbu.component"; do
 done
 
 rm -rf dist Anbu-macOS.zip
-mkdir -p "dist/Manual install" "$work/vst3" "$work/au" "$work/pkgs"
-cp -R "$art/VST3/Anbu.vst3" "$art/AU/Anbu.component" "dist/Manual install/"
+mkdir -p dist "$work/vst3" "$work/au" "$work/pkgs"
+cp -R "$art/VST3/Anbu.vst3" "$work/vst3/"
+cp -R "$art/AU/Anbu.component" "$work/au/"
 
 # Not notarized (that needs a paid Apple developer account), but signed ad hoc so the
 # bundle is sealed and Apple Silicon loads it.
-for b in "dist/Manual install/Anbu.vst3" "dist/Manual install/Anbu.component"; do
+for b in "$work/vst3/Anbu.vst3" "$work/au/Anbu.component"; do
     codesign --force --deep --sign - --timestamp=none "$b"
     codesign --verify --deep --strict "$b"
 done
-
-cp -R "dist/Manual install/Anbu.vst3" "$work/vst3/"
-cp -R "dist/Manual install/Anbu.component" "$work/au/"
 
 # One package per format, installed into /Library/Audio/Plug-Ins/<format>.
 # The bundles must not be "relocatable", or Installer would follow an older copy elsewhere
@@ -57,4 +55,4 @@ productbuild --distribution "$work/distribution.xml" --package-path "$work/pkgs"
 cp "$root/INSTALL.md" dist/
 ditto -c -k --norsrc --noextattr dist Anbu-macOS.zip
 echo "packed Anbu-macOS.zip (version $version):"
-unzip -l Anbu-macOS.zip | grep -v "/Contents/.*/" || true
+unzip -l Anbu-macOS.zip

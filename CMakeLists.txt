@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Mac: one universal build (Apple Silicon and Intel) that runs on macOS 10.13 and newer.
+# Must be set before project(); ignored on other systems.
+if(CMAKE_HOST_APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Oldest macOS version the plugin runs on")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Mac architectures to build")
+endif()
+
 project(Anbu VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -36,6 +43,12 @@ if(UNIX AND NOT APPLE)   # only for test builds in the Linux build environment
         JUCE_USE_XRENDER=0 JUCE_USE_XSHM=0 JUCE_ALSA=0 JUCE_JACK=0)
 endif()
 
+# Windows: VST3. Mac: VST3 and Audio Unit (Logic Pro, GarageBand and other AU hosts).
+set(ANBU_FORMATS VST3)
+if(APPLE)
+    list(APPEND ANBU_FORMATS AU)
+endif()
+
 # Panel art (rendered by tools/hw) and fonts (Catamaran + Barlow Semi Condensed, OFL), compiled into the plugin
 file(GLOB ANBU_GUI_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Resources/ui/* ${CMAKE_CURRENT_SOURCE_DIR}/Resources/hw/*)
 juce_add_binary_data(AnbuGui HEADER_NAME BinaryData.h NAMESPACE BinaryData SOURCES ${ANBU_GUI_FILES})
@@ -47,7 +60,7 @@ juce_add_plugin(Anbu
     BUNDLE_ID                   "com.r4n.anbu"
     PLUGIN_MANUFACTURER_CODE    R4Nx
     PLUGIN_CODE                 Anb1
-    FORMATS                     VST3
+    FORMATS                     ${ANBU_FORMATS}
     VST3_CATEGORIES             Fx Dynamics
     IS_SYNTH                    FALSE
     NEEDS_MIDI_INPUT            FALSE

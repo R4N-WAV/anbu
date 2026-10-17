@@ -1,0 +1,4 @@
+#!/bin/sh
+# replace an earlier version completely (Installer would otherwise merge old and new files)
+rm -rf "$3/Library/Audio/Plug-Ins/Components/Anbu.component"
+exit 0

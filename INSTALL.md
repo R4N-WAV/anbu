@@ -1,15 +1,45 @@
 # Anbu v1 (R4N) – install, use and build
 
 Anbu is an optical-style leveling amplifier with a colour stage, made mainly for vocals.
-It is a 64-bit VST3 plugin for Windows (10 or 11). It is developed and tested in FL Studio,
-and works in any VST3 host.
 
-## Install
-1. Get the plugin: on GitHub open **Actions** → the latest green *Build Anbu (Windows VST3)* run →
-   **Artifacts** → **Anbu-VST3-Windows** (a zip).
-2. Right-click the zip → **Properties** → tick **Unblock** → **OK**. Unzip it.
-3. Copy the folder **`Anbu.vst3`** into `C:\Program Files\Common Files\VST3`.
-4. In your host, rescan plugins (FL Studio: **Options → Manage plugins → Find installed plugins**) and load **Anbu** on an insert.
+- **Windows** (10 or 11): VST3, 64-bit. Developed and tested in FL Studio; works in any VST3 host.
+- **Mac** (macOS 10.13 or newer, Apple Silicon and Intel): VST3 and Audio Unit (AU), for Logic Pro,
+  GarageBand, Ableton Live, FL Studio, Cubase, Studio One, Reaper, Bitwig and other hosts.
+
+Downloads: `Anbu-VST3-Windows.zip` and `Anbu-macOS.zip`, from the
+[latest release](https://github.com/R4N-WAV/anbu/releases/tag/latest) on GitHub.
+
+## Install on Windows
+1. Right-click the zip → **Properties** → tick **Unblock** → **OK**. Unzip it.
+2. Copy the folder **`Anbu.vst3`** into `C:\Program Files\Common Files\VST3`.
+3. In your host, rescan plugins (FL Studio: **Options → Manage plugins → Find installed plugins**) and load **Anbu** on an insert.
+
+## Install on Mac
+Anbu isn't notarized by Apple (that needs a paid Apple developer account), so the first time macOS
+asks you to allow it. This is a one-time step.
+
+**With the installer (recommended)**
+1. Double-click `Anbu-macOS.zip` to unzip it, then double-click **Install Anbu.pkg**.
+2. macOS says it can't verify the installer: click **Done** (or **OK**). Open **System Settings → Privacy & Security**,
+   scroll down to *“Install Anbu.pkg” was blocked* and click **Open Anyway**, then confirm with your password.
+   (macOS 14 Sonoma and older: you can instead right-click the pkg → **Open** → **Open**.)
+3. Click through the installer. It installs both formats for all users:
+   `/Library/Audio/Plug-Ins/VST3/Anbu.vst3` and `/Library/Audio/Plug-Ins/Components/Anbu.component`
+   (under **Customize** you can leave one out).
+4. Restart your host or rescan plugins and load **Anbu** (listed under **R4N**) on an insert.
+   - Logic Pro / GarageBand: restart the app. Still missing: Logic Pro → Settings → Plug-in Manager → select Anbu → **Reset & Rescan Selection**.
+   - FL Studio: **Options → Manage plugins → Find installed plugins**.
+   - Ableton Live: Settings → Plug-Ins → turn on **Use VST3 Plug-In System Folders** → **Rescan**.
+
+**By hand (without the installer)**
+1. Unzip, open the folder **Manual install**.
+2. In Finder choose **Go → Go to Folder…**, enter `~/Library/Audio/Plug-Ins` and copy
+   `Anbu.vst3` into the `VST3` folder and `Anbu.component` into the `Components` folder (create them if missing).
+3. Open **Terminal** and run this once (it removes the “downloaded from the internet” flag that makes macOS block the plugin):
+   ```
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Anbu.vst3 ~/Library/Audio/Plug-Ins/Components/Anbu.component
+   ```
+4. Restart your host or rescan plugins (step 4 above).
 
 ## Controls
 | Control | What it does |
@@ -37,20 +67,36 @@ All controls move in whole steps. The plugin reports its delay to the host, also
 - The plugin window can be resized from the bottom-right corner.
 
 ## Troubleshooting
+**Windows**
 - **The host doesn't list Anbu:** check that the folder is exactly `C:\Program Files\Common Files\VST3\Anbu.vst3`, that the zip was unblocked before unzipping, then rescan.
-- **Windows blocks the plugin:** the plugin is not code-signed; unblocking the zip (step 2) avoids the warning.
+- **Windows blocks the plugin:** the plugin is not code-signed; unblocking the zip (step 1) avoids the warning.
+
+**Mac**
+- **The host doesn't list Anbu:** restart the host (Logic Pro and GarageBand only look for new Audio Units at start-up), then rescan.
+  Still missing: log out of macOS and back in, which refreshes the Audio Unit list.
+- **“Anbu is damaged and can't be opened” or “Apple could not verify Anbu”:** the files still carry the download flag
+  (this happens with the manual install). Run the `xattr` command from the manual install, step 3.
+  For files put there by the installer: `sudo xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component`
+- **Two Anbus in the list:** you installed both by hand and with the installer. Delete one copy
+  (`~/Library/Audio/Plug-Ins/...` or `/Library/Audio/Plug-Ins/...`).
 
 ## Building from source
-Requirements: CMake 3.22+, a C++17 compiler (Visual Studio 2022 on Windows). JUCE 8.0.8 is fetched automatically.
+Requirements: CMake 3.22+, a C++17 compiler (Visual Studio 2022 on Windows, Xcode or its command line tools on Mac).
+JUCE 8.0.8 is fetched automatically.
 
 ```
-cmake -S . -B build -DANBU_BUILD_TOOLS=ON
-cmake --build build --config Release --target Anbu_VST3 AnbuStress
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DANBU_BUILD_TOOLS=ON
+cmake --build build --config Release --target Anbu_VST3 AnbuStress        # Mac: add Anbu_AU
 build/AnbuStress_artefacts/Release/AnbuStress      # robustness checks (sample rates, block sizes, latency, state ...)
+packaging/mac/package.sh build                     # Mac: Anbu-macOS.zip with the installer
 ```
 
-GitHub Actions builds the plugin on every push, runs the robustness checks and validates the VST3 with pluginval
-(`.github/workflows/build.yml`). Other tools (`-DANBU_BUILD_TOOLS=ON`, `-DANBU_BUILD_SNAPSHOT=ON`):
+On Mac the build is universal (Apple Silicon and Intel) and runs on macOS 10.13 and newer.
+
+GitHub Actions builds both platforms on every push (`.github/workflows/build.yml`): it runs the robustness checks,
+validates the Windows VST3 with pluginval, and on Mac installs the package and validates the VST3 and AU with
+pluginval and Apple's auval, on an Apple Silicon and on an Intel Mac. Builds from `main` that pass everything are
+published as the `latest` release. Other tools (`-DANBU_BUILD_TOOLS=ON`, `-DANBU_BUILD_SNAPSHOT=ON`):
 `AnbuRender` runs the processor over a raw float32 stereo file; `AnbuSnapshot` renders the panel to PNG.
 
 ## Source layout
@@ -59,6 +105,7 @@ GitHub Actions builds the plugin on every push, runs the robustness checks and v
 - `Source/PluginEditor.*` – the panel; `Source/HwAssets.h` – geometry of the rendered art.
 - `Resources/hw` – rendered panel art; `Resources/ui` – fonts (Catamaran and Barlow Semi Condensed, SIL Open Font License, see `Resources/FONT_LICENSE_*.txt`).
 - `tools/hw` – the panel renderer (below).
+- `packaging/mac` – the Mac installer (`package.sh` builds `Anbu-macOS.zip`).
 
 ## Panel artwork
 The faceplate is rendered offline from a 3D description of the panel: `tools/hw/hw.py` describes the surfaces and materials,

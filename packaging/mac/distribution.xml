@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Anbu by R4N</title>
+    <options customize="allow" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <domains enable_localSystem="true" enable_currentUserHome="false" enable_anywhere="false"/>
+    <allowed-os-versions>
+        <os-version min="10.13"/>
+    </allowed-os-versions>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <choices-outline>
+        <line choice="vst3"/>
+        <line choice="au"/>
+    </choices-outline>
+    <choice id="vst3" title="Anbu VST3" description="For Ableton Live, FL Studio, Cubase, Studio One, Reaper, Bitwig and other VST3 hosts.">
+        <pkg-ref id="com.r4n.anbu.vst3"/>
+    </choice>
+    <choice id="au" title="Anbu Audio Unit (AU)" description="For Logic Pro, GarageBand and other Audio Unit hosts.">
+        <pkg-ref id="com.r4n.anbu.au"/>
+    </choice>
+    <pkg-ref id="com.r4n.anbu.vst3" version="@VERSION@" onConclusion="none">Anbu-VST3.pkg</pkg-ref>
+    <pkg-ref id="com.r4n.anbu.au" version="@VERSION@" onConclusion="none">Anbu-AU.pkg</pkg-ref>
+</installer-gui-script>

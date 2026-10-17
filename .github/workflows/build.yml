@@ -1,15 +1,17 @@
-name: Build Anbu (Windows VST3)
+name: Build Anbu (Windows + Mac)
 
-# Runs on every push, and manually: Actions tab -> "Build Anbu (Windows VST3)" -> "Run workflow".
+# Runs on every push, and manually: Actions tab -> "Build Anbu (Windows + Mac)" -> "Run workflow".
+# Builds on main that pass every check are published as the "latest" GitHub release.
 on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   windows-vst3:
     runs-on: windows-2022
-    permissions:
-      contents: write          # publish the validated build as the "latest" release
     timeout-minutes: 60
     steps:
       - name: Get source
@@ -63,13 +65,191 @@ jobs:
           if ($code -ne 0) { Write-Output "::error::pluginval failed (exit $code)"; exit 1 }
           Write-Output "pluginval passed"
 
-      - name: Publish as the latest release (validated builds from main only)
-        if: github.ref == 'refs/heads/main'
+      - name: Zip for the release
         shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath Anbu-VST3-Windows.zip -Force
+
+      - name: Keep the zip for the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: Anbu-VST3-Windows.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # Universal build (Apple Silicon + Intel), VST3 and AU, tested here on Apple Silicon.
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+
+      - name: Configure (fetches JUCE 8.0.8 automatically)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DANBU_BUILD_TOOLS=ON -DANBU_BUILD_SNAPSHOT=ON
+
+      - name: Build VST3, AU and checks (Release, universal)
+        run: cmake --build build --config Release --target Anbu_VST3 Anbu_AU AnbuStress AnbuSnapshot --parallel 3
+
+      - name: Both architectures in every binary
+        run: |
+          set -e
+          for f in build/Anbu_artefacts/Release/VST3/Anbu.vst3/Contents/MacOS/Anbu \
+                   build/Anbu_artefacts/Release/AU/Anbu.component/Contents/MacOS/Anbu \
+                   build/AnbuStress_artefacts/Release/AnbuStress; do
+            echo "$f: $(lipo -archs "$f")"
+            lipo "$f" -verify_arch arm64 x86_64
+          done
+          otool -arch all -l build/Anbu_artefacts/Release/VST3/Anbu.vst3/Contents/MacOS/Anbu | grep -A4 -E "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION" | grep -E "version|minos" | sort -u
+
+      - name: Robustness checks (Apple Silicon)
+        run: build/AnbuStress_artefacts/Release/AnbuStress quick
+
+      - name: Package (installer + plugin bundles + INSTALL.md)
+        run: packaging/mac/package.sh build
+
+      - name: Keep the zip (for the release and the Intel test)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anbu-macOS
+          path: Anbu-macOS.zip
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Keep the checks program for the Intel test
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-checks
+          path: build/AnbuStress_artefacts/Release/AnbuStress
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Install with the installer, as a user would
+        run: |
+          set -e
+          sudo installer -pkg "dist/Install Anbu.pkg" -target /
+          for b in /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component; do
+            ls -l "$b/Contents/MacOS"
+            codesign --verify --deep --strict --verbose=1 "$b"
+          done
+
+      - name: Validate the Audio Unit with auval (Apple's validator)
+        run: |
+          set -e
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a | grep -i "R4Nx" || true
+          auval -strict -v aufx Anb1 R4Nx
+
+      - name: Validate VST3 and AU with pluginval
+        run: |
+          set -e
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip -d pluginval
+          pv="$(find pluginval -path "*Contents/MacOS/pluginval" -type f | head -1)"
+          for b in /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component; do
+            echo "::group::pluginval $b"
+            "$pv" --strictness-level 5 --validate-in-process --timeout-ms 600000 --validate "$b"
+            echo "::endgroup::"
+          done
+
+      - name: Panel snapshot (how the panel renders on a Mac)
+        continue-on-error: true
+        run: |
+          build/AnbuSnapshot_artefacts/Release/AnbuSnapshot panel-mac.png 2
+          build/AnbuSnapshot_artefacts/Release/AnbuSnapshot analyser-mac.png 1 analyser
+
+      - name: Keep the snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-snapshot
+          path: "*-mac.png"
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The same zip, installed and validated on an Intel Mac (the x86_64 half of the universal build).
+  mac-intel:
+    needs: mac
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - name: Get the Mac build
+        uses: actions/download-artifact@v4
+        with:
+          name: Anbu-macOS
+
+      - name: Get the checks program
+        uses: actions/download-artifact@v4
+        with:
+          name: mac-checks
+
+      - name: Robustness checks (Intel)
+        run: |
+          echo "machine: $(uname -m)"
+          chmod +x AnbuStress
+          ./AnbuStress quick
+
+      - name: Install with the installer, as a user would
+        run: |
+          set -e
+          ditto -x -k Anbu-macOS.zip unpacked
+          ls -l unpacked
+          sudo installer -pkg "unpacked/Install Anbu.pkg" -target /
+          for b in /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component; do
+            codesign --verify --deep --strict --verbose=1 "$b"
+          done
+
+      - name: Validate the Audio Unit with auval
+        run: |
+          set -e
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a | grep -i "R4Nx" || true
+          auval -strict -v aufx Anb1 R4Nx
+
+      - name: Validate VST3 and AU with pluginval
+        run: |
+          set -e
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip -d pluginval
+          pv="$(find pluginval -path "*Contents/MacOS/pluginval" -type f | head -1)"
+          for b in /Library/Audio/Plug-Ins/VST3/Anbu.vst3 /Library/Audio/Plug-Ins/Components/Anbu.component; do
+            echo "::group::pluginval $b"
+            "$pv" --strictness-level 5 --validate-in-process --timeout-ms 600000 --validate "$b"
+            echo "::endgroup::"
+          done
+
+  publish:
+    needs: [windows-vst3, mac, mac-intel]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-latest
+    steps:
+      - name: Get the Windows zip
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+
+      - name: Get the Mac zip
+        uses: actions/download-artifact@v4
+        with:
+          name: Anbu-macOS
+
+      - name: Publish as the latest release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          Compress-Archive -Path dist/* -DestinationPath Anbu-VST3-Windows.zip -Force
-          gh release delete latest --yes --cleanup-tag 2>$null
-          $notes = "Latest validated Windows build (VST3, 64-bit) from commit ${{ github.sha }}.`n`nInstall: unzip, then copy the Anbu.vst3 folder into C:\Program Files\Common Files\VST3 and rescan plugins in your host. Full guide: INSTALL.md (also inside the zip)."
-          gh release create latest Anbu-VST3-Windows.zip --title "Anbu - latest build" --notes $notes --latest
+          set -e
+          ls -l Anbu-VST3-Windows.zip Anbu-macOS.zip
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          notes=$(printf '%s\n' \
+            "Latest validated build from commit ${{ github.sha }}." \
+            "" \
+            "- **Windows** (VST3, 64-bit): Anbu-VST3-Windows.zip. Unzip, copy the Anbu.vst3 folder into C:\\Program Files\\Common Files\\VST3 and rescan plugins in your host." \
+            "- **Mac** (VST3 + Audio Unit, Apple Silicon and Intel, macOS 10.13+): Anbu-macOS.zip. Unzip and open Install Anbu.pkg. It is not notarized by Apple: the first time, macOS blocks it; allow it in System Settings > Privacy & Security > Open Anyway." \
+            "" \
+            "Full guide: INSTALL.md (also inside both zips).")
+          gh release create latest Anbu-VST3-Windows.zip Anbu-macOS.zip --target "${{ github.sha }}" --title "Anbu - latest build" --notes "$notes" --latest

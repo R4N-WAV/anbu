@@ -1,0 +1,4 @@
+#!/bin/sh
+# make macOS re-read the Audio Unit list, so hosts see Anbu without logging out
+killall -9 AudioComponentRegistrar >/dev/null 2>&1
+exit 0

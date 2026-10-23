@@ -36,7 +36,7 @@ To uninstall, delete those two files (Finder: **Go → Go to Folder…**, `/Libr
 | Control | What it does |
 |---|---|
 | Peak reduction | Amount of compression, opto style. Tone and distortion change with it (most at the top of the range). |
-| Color (fader) | Colour stage: a tone curve plus harmonics. 25 % = classic, about 80 % = strong, 100 % = overkill. 0 = off. |
+| Color (fader) | Colour stage: a console tone curve plus harmonics. Up to 25 % it is the classic console character; above that a smooth, level-dependent saturation takes over (2nd harmonic first, each higher one much quieter, quiet details stay clean). 100 % = full character. 0 = off. |
 | Input / Output | Drive into the unit / level out (±24 dB). More input = more compression and more colour. |
 | Mix | Parallel blend with the dry signal (time-aligned). |
 | Compress / Limit | Mode. Click the round button to switch, or click the word. |
@@ -44,15 +44,24 @@ To uninstall, delete those two files (Finder: **Go → Go to Folder…**, `/Libr
 | Oversampling | Off / 2× / 4× / 8×. 4× is the normal setting. |
 | Bypass | The small key under Noise level (also linked to your host's bypass). Passes the input through with the same delay, crossfaded so it never clicks. |
 | Phase | Low latency (a few samples of delay) or Linear (cleaner phase, about 1.3 ms of delay at 48 kHz). |
+| Auto Gain | The rocker under Phase. Matches what comes out to what went in, in loudness (measured like a loudness meter, ITU-R BS.1770), so you hear what Anbu does, not that it is louder or quieter. It re-matches about half a second after you change something and then holds still, so it does not undo the compression. Output still works as a trim on top. The display shows the correction. |
 
 All controls move in whole steps. The plugin reports its delay to the host, also when bypassed, so tracks stay in time.
+
+## Presets
+- The strip at the top: **‹ ›** step through the presets, click the **display** for the menu, **SAVE** to save the current sound under a name (type it in the display, Enter to save, Esc to cancel).
+- The menu has the factory presets by category (Vocals, Instruments, Mix & Master, Color, Creative), your own presets, *Save as…*, *Save* / *Delete* for your own preset, and *Show preset folder*.
+- A `*` after the name means you changed something since loading it.
+- A preset holds the sound (Peak reduction, Color, Input, Output, Mix, mode, noise). Oversampling, phase, Auto Gain and Bypass stay as they are.
+- The factory presets are set up for typical levels (a vocal around −18 LUFS): Output is set so a preset comes out about as loud as it went in.
+- Your presets are files in your Documents folder, `R4N/Anbu/Presets` (Windows: `Documents\R4N\Anbu\Presets`, Mac: `~/Documents/R4N/Anbu/Presets`), one `*.anbupreset` file each. Sub-folders there show up as categories; copy the files to share them (they work on both systems).
 
 ## Using the panel
 - **Start-up:** the first time a new Anbu opens, அ lights up, grows into the logo and settles into the plate while a wave of light runs across the panel. Click anywhere to skip it. It plays once per plugin instance.
 - **Knobs and fader:** drag up/down. Double-click = default. Mouse wheel works. While you move one, its name and value show in the display. The lamp ring around a knob follows its value and is dark at the knob's zero; Input and Output light from 0 dB outwards.
 - **Keys:** click. The pressed key sits lower and its legend lights up.
-- **Bypass:** the colour drains out of the panel into the Bypass key; switching back pours it out again (under a second each way).
-- **Needle meter:** click *GR* or *OUT* on the meter face. GR shows gain reduction, read from right to left (rests at 0 on the right, 20 dB at the left). It is zeroed at idle, so high Peak reduction settings read 0 with no signal. OUT shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
+- **Bypass:** the colour drains out of the panel into the Bypass key; switching back pours it out again (under a second each way). It works on a still of the panel, so it costs only a few milliseconds per frame.
+- **Needle meter:** click *GR* or *OUT* on the meter face. GR shows gain reduction, read from right to left (rests at 0 on the right, 20 dB at the left). The scale is progressive like on studio GR meters: every dB from 0 to 6 is numbered and wide, so 2, 3 or 4 dB of reduction reads at a glance. It is zeroed at idle, so high Peak reduction settings read 0 with no signal. OUT shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
 - **Display:** beige = output spectrum; orange = the harmonics and distortion Anbu adds, at their true level (at Peak reduction 0 and Color 0 they sit about 50 dB below the signal); white line = Anbu's tone curve at the current settings.
 - **Analyser window:** the arrows in the display's corner open a larger analyser in its own window (also input, peak hold and a 60/90 dB range). Drag its top bar to move it, the corner to resize, × to close.
 - The plugin window can be resized from the bottom-right corner.
@@ -93,9 +102,10 @@ published as the `latest` release. Other tools (`-DANBU_BUILD_TOOLS=ON`, `-DANBU
 ## Source layout
 - `Source/DSP/AnbuCore.h` – the DSP (control path, audio path, colour stage, 3D side lift, noise); `AnbuConstants.h` holds the fitted model constants.
 - `Source/PluginProcessor.*` – parameters, oversampling, mix, meters, state.
+- `Source/DSP/AutoGain.h` – Auto Gain (loudness match). `Source/Presets.*` – the factory bank and user presets.
 - `Source/PluginEditor.*` – the panel; `Source/HwAssets.h` – geometry of the rendered art.
 - `Resources/hw` – rendered panel art; `Resources/ui` – fonts (Catamaran and Barlow Semi Condensed, SIL Open Font License, see `Resources/FONT_LICENSE_*.txt`).
-- `tools/hw` – the panel renderer (below).
+- `tools/hw` – the panel renderer (below). `tools/presets/makeup.py` – calibrates the factory presets (Peak reduction for a target amount of leveling, Output for equal loudness).
 - `packaging/mac` – the Mac installer (`package.sh` builds `Anbu-macOS.zip`).
 
 ## Panel artwork

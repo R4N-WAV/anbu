@@ -28,6 +28,7 @@ APVTS::ParameterLayout AnbuProcessor::createLayout()
                                                         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " dB"; })
                                                                                        .withValueFromStringFunction (num)));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::bypass, 1 }, "Bypass", false));
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::autoGain, 1 }, "Auto Gain", false));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::os, 1 }, "Oversampling", StringArray { "Off", "2x", "4x", "8x" }, 2));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::phase, 1 }, "OS Phase", StringArray { "Low Latency", "Linear" }, 0));
     return { p.begin(), p.end() };
@@ -75,9 +76,11 @@ void AnbuProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     control.prepare (fs);
     side.prepare (fs);
     noise.prepare (fs, noiseSeed);
+    autoGain.prepare (fs);
 
-    inGain.reset (fs, 0.03); outGain.reset (fs, 0.03); mixAmt.reset (fs, 0.03); bypassMix.reset (fs, 0.02);
+    inGain.reset (fs, 0.03); outGain.reset (fs, 0.03); mixAmt.reset (fs, 0.03); bypassMix.reset (fs, 0.02); agMix.reset (fs, 0.05);
     bypassMix.setCurrentAndTargetValue (apvts.getRawParameterValue (ids::bypass)->load() > 0.5f ? 1.0f : 0.0f);
+    agMix.setCurrentAndTargetValue (apvts.getRawParameterValue (ids::autoGain)->load() > 0.5f ? 1.0f : 0.0f);
     prSmooth.reset (fs, 0.05); colorSmooth.reset (fs, 0.05);
     inGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue (ids::input)->load()));
     outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue (ids::output)->load()));
@@ -144,6 +147,13 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     prSmooth.setTargetValue (apvts.getRawParameterValue (ids::pr)->load());
     colorSmooth.setTargetValue (apvts.getRawParameterValue (ids::color)->load() / 100.0);
     const bool limit = apvts.getRawParameterValue (ids::mode)->load() > 0.5f;
+    agMix.setTargetValue (apvts.getRawParameterValue (ids::autoGain)->load() > 0.5f ? 1.0f : 0.0f);
+    {   // a setting that changes the loudness ratio moved: let Auto Gain re-converge quickly
+        const float now[7] = { apvts.getRawParameterValue (ids::pr)->load(), apvts.getRawParameterValue (ids::color)->load(),
+                               apvts.getRawParameterValue (ids::input)->load(), apvts.getRawParameterValue (ids::mix)->load(),
+                               limit ? 1.0f : 0.0f, apvts.getRawParameterValue (ids::noiseOn)->load(), (float) osIdx };
+        if (! std::equal (now, now + 7, agLast)) { std::copy (now, now + 7, agLast); autoGain.nudge(); }
+    }
 
     // dry copy (pre input gain) for the Mix control, delayed to line up with the oversampled path
     float* dL = dryBuf.getWritePointer (0);
@@ -176,7 +186,7 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         {
             const int i0 = sb * SUB, m = juce::jmin (SUB, n - i0);
             const auto& s = subSettings[(size_t) sb];
-            audio.setSettings (s, anbu::colorTone (s.color), anbu::colorKappa (s.color));
+            audio.setSettings (s, anbu::colorTone (s.color), anbu::colorKappa (s.color), anbu::colorSilk (s.color));
             audio.process (aL + i0 * factor, aR + i0 * factor, m * factor, gBuf.data() + i0, gsBuf.data() + i0, capBuf.data() + i0, harmOS.data() + i0 * factor);
         }
     };
@@ -209,13 +219,23 @@ void AnbuProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     {
         const float g = outGain.getNextValue(), w = mixAmt.getNextValue();
         lastOutGain = g; lastMix = w;
-        const float b = bypassMix.getNextValue();
-        L[i] = (1.0f - b) * (w * L[i] * g + (1.0f - w) * dL[i]) + b * dL[i];
-        R[i] = (1.0f - b) * (w * R[i] * g + (1.0f - w) * dR[i]) + b * dR[i];
+        const float b = bypassMix.getNextValue(), ag = agMix.getNextValue();
+        // Auto Gain measures the mixed signal before Output (Output stays a trim on top) against the dry input
+        const float mL = w * L[i] + (1.0f - w) * dL[i], mR = w * R[i] + (1.0f - w) * dR[i];
+        autoGain.push (dL[i], dR[i], mL, mR);
+        float yL = w * L[i] * g + (1.0f - w) * dL[i], yR = w * R[i] * g + (1.0f - w) * dR[i];
+        if (ag > 0.0f)
+        {
+            const float ga = (float) autoGain.gain() * g;
+            yL += ag * (mL * ga - yL); yR += ag * (mR * ga - yR);
+        }
+        L[i] = (1.0f - b) * yL + b * dL[i];
+        R[i] = (1.0f - b) * yR + b * dR[i];
         ss += 0.5 * ((double) L[i] * L[i] + (double) R[i] * R[i]);
     }
 
     // ---- meters
+    meterAgDb.store ((float) autoGain.targetDb());
     double gmax = 0.0;
     for (int i = 0; i < n; ++i) gmax = juce::jmax (gmax, gsBuf[(size_t) i]);
     // the meter is zeroed at idle, like the LA-2A's GR-zero trim (high PR drops the idle level; that is not compression)

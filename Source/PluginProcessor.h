@@ -5,6 +5,8 @@
 #include <atomic>
 #include <memory>
 #include "DSP/AnbuCore.h"
+#include "DSP/AutoGain.h"
+#include "Presets.h"
 
 namespace ids {
 inline constexpr auto pr = "peakReduction";
@@ -18,6 +20,7 @@ inline constexpr auto noiseLevel = "noiseLevel";
 inline constexpr auto os = "oversampling";
 inline constexpr auto phase = "osPhase";
 inline constexpr auto bypass = "bypass";
+inline constexpr auto autoGain = "autoGain";
 }
 
 class AnbuProcessor : public juce::AudioProcessor
@@ -55,12 +58,14 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    anbu::PresetManager presets { apvts };
 
     // meters for the editor (written on the audio thread)
     //   meterGrDb : gain reduction of the optical cell (dB)
     //   meterVuDb : output level for the VU needle, 0 on the scale = -18 dBFS RMS
     //   meterGs   : slow cell conductance (drives the EQ curve in the display)
     std::atomic<float> meterGrDb { 0.0f }, meterVuDb { -100.0f }, meterGs { 0.0f }, meterCapW { 1.0f };
+    std::atomic<float> meterAgDb { 0.0f };       // Auto Gain correction (dB), also while Auto Gain is off
 
     // spectrum display feeds (mono): output, input (after input gain), added harmonics.
     // single producer (audio) / single consumer (editor)
@@ -88,6 +93,8 @@ private:
     anbu::AudioPath audio;
     anbu::SideLift side;
     anbu::NoiseGen noise;
+    anbu::AutoGain autoGain;
+    float agLast[7] {};                               // settings the match depends on: a change re-converges it fast
 
     std::vector<double> gBuf, gsBuf, capBuf;
     std::vector<float> monoR;
@@ -95,7 +102,7 @@ private:
     juce::AudioBuffer<float> dryBuf;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> dryDelay { 1 << 15 };
 
-    juce::SmoothedValue<float> inGain, outGain, mixAmt, bypassMix;
+    juce::SmoothedValue<float> inGain, outGain, mixAmt, bypassMix, agMix;
     juce::SmoothedValue<double, juce::ValueSmoothingTypes::Linear> prSmooth, colorSmooth;
     double vuMs = 0.0;
     static constexpr int anaSize = 1 << 15;

@@ -173,6 +173,31 @@ def glass(rect, name):
     rgba[..., 3] = np.clip(a, 0, 1)
     save_png((rgba * 255 + 0.5).astype(np.uint8), name)
 
+def rocker_rect():
+    cx, cy, w, h = hw.ROCKER
+    return irect(cx - w / 2 - 2, cy - h / 2 - 2, cx + w / 2 + 2, cy + h / 2 + 2)
+
+def part_rocker(binary, work):
+    rect = rocker_rect()
+    region = padded(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3], 10)
+    st = bg_state(); st['rocker'] = True
+    img, _ = render_region(binary, work, st, region)
+    save_png(crop(img, region, rect), 'rocker_on.png')
+
+def hkey_rect(i):
+    x, y, w, h, _ = hw.HDR_KEYS[i]
+    return irect(x - 3, y - 3, x + w + 3, y + h + 3)
+
+def part_strip(binary, work):
+    sc = hw.build_header(hw.default_state())
+    img = hw.to_srgb8(hw.light_falloff(sc, hw.render(sc, binary, work, SAMPLES)))
+    save_jpg(img, 'strip.jpg', 95)
+    sc = hw.build_header(dict(hw.default_state(), hkeys_down=[True, True, True]))
+    img = hw.to_srgb8(hw.light_falloff(sc, hw.render(sc, binary, work, SAMPLES)))
+    for i in range(len(hw.HDR_KEYS)):
+        x, y, w, h = hkey_rect(i)
+        save_png(img[int(y * KO):int((y + h) * KO), int(x * KO):int((x + w) * KO)], f'hkey_{i}.png')
+
 LOGO_RECT = (30, 44, 208, 86)
 def part_nologo(binary, work):
     region = padded(LOGO_RECT[0], LOGO_RECT[1], LOGO_RECT[0] + LOGO_RECT[2], LOGO_RECT[1] + LOGO_RECT[3], 10)
@@ -207,12 +232,21 @@ def header():
     pv = H.get('pivot') or irect(hw.PIV[0] - 76, hw.FACE[1] + hw.FACE[3] - 16, hw.PIV[0] + 76, hw.FACE[1] + hw.FACE[3])
     lines.append(f'inline constexpr Rect pivot {{ {pv[0]}, {pv[1]}, {pv[2]}, {pv[3]} }};')
     lines.append(f'inline constexpr Rect logoPatch {{ {LOGO_RECT[0]}, {LOGO_RECT[1]}, {LOGO_RECT[2]}, {LOGO_RECT[3]} }};')
+    rr = rocker_rect()
+    lines.append(f'inline constexpr Rect rocker {{ {rr[0]}, {rr[1]}, {rr[2]}, {rr[3]} }};')
+    lines.append(f'inline constexpr float rockerCx = {float(hw.ROCKER[0])}f, rockerCy = {float(hw.ROCKER[1])}f, rockerW = {float(hw.ROCKER[2])}f, rockerH = {float(hw.ROCKER[3])}f;')
+    lines.append('// preset strip above the panel (strip-local design units; the panel starts at stripH)')
+    lines.append(f'inline constexpr int stripH = {hw.HEADER_H};')
+    d = hw.HDR_DISP
+    lines.append(f'inline constexpr Rect stripDisplay {{ {d[0]}, {d[1]}, {d[2]}, {d[3]} }};')
+    lines.append('inline constexpr Rect stripKeys[3] = { ' + ', '.join(f'{{ {k[0]}, {k[1]}, {k[2]}, {k[3]} }}' for k in hw.HDR_KEYS) + ' };')
+    lines.append('inline constexpr Rect stripKeySprites[3] = { ' + ', '.join(f'{{ {r[0]}, {r[1]}, {r[2]}, {r[3]} }}' for r in (hkey_rect(i) for i in range(3))) + ' };')
     lines.append('}')
     open(HDR, 'w').write('\n'.join(lines) + '\n')
 
 if __name__ == '__main__':
     binary, work = sys.argv[1:3]
-    parts = sys.argv[3:] or ['bg', 'knobs', 'rings', 'lamps', 'keys', 'fader', 'meter', 'glass', 'nologo', 'header']
+    parts = sys.argv[3:] or ['bg', 'knobs', 'rings', 'lamps', 'keys', 'fader', 'meter', 'glass', 'nologo', 'rocker', 'strip', 'header']
     os.makedirs(OUT, exist_ok=True)
     only = [p.split('=')[1].split(',') for p in parts if p.startswith('only=')]
     only = only[0] if only else None
@@ -225,5 +259,7 @@ if __name__ == '__main__':
     if 'meter' in parts: part_meter(binary, work)
     if 'glass' in parts: part_glass()
     if 'nologo' in parts: part_nologo(binary, work)
+    if 'rocker' in parts: part_rocker(binary, work)
+    if 'strip' in parts: part_strip(binary, work)
     if 'header' in parts or True: header()
     print('done')

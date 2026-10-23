@@ -81,6 +81,15 @@ constexpr double LA_TOL_MU = 0.92;
 constexpr double LN_TOL_FC = 1.12;
 constexpr double LN_TOL_K2 = 1.18;
 constexpr double LN_TOL_K3 = 0.9;
+// Silk stage (voiced by ear and measurement, not fitted)
+constexpr double SILK_LO = 250;         // band edges of the three saturating bands
+constexpr double SILK_SPLIT = 3000;     // the top band feeds the stage at SILK_HI
+constexpr double SILK_HI = 0.5;
+constexpr double SILK_TOP = 12000;      // harmonics roll off above this
+constexpr double SILK_DRIVE = 0.8;
+constexpr double SILK_BIAS = 0.35;
+constexpr double SILK_TOL = 1.08;       // right channel: slightly different bias (3D)
+constexpr double SILK_BREATHE = 0.5;
 constexpr double SIDE_F = 5000;
 constexpr double SIDE_G = 1.2;
 constexpr EqSection LIN_EQ_L[4] = { { 0, 32.17768506, 0.5200662133, 2.346868356 }, { 1, 103.6128103, 0.2285238213, 1.708946567 }, { 1, 2945.745546, 0.1519583267, 2.796360899 }, { 2, 20000, 1.215910573, -0.4844031877 } };

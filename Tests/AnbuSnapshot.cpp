@@ -76,13 +76,23 @@ int main (int argc, char** argv)
     }
     if (mode.startsWith ("intro=")) ae->setIntroFrame (mode.fromFirstOccurrenceOf ("=", false, false).getDoubleValue());
     if (mode == "readout" || mode == "analyser") ae->setReadout (2);
+    if (mode == "menu")      // the preset menu, drawn through its look-and-feel (no desktop windows here)
+    {
+        writePng (ae->renderPresetMenuPreview (scale, juce::String (argc > 4 ? argv[4] : "")), juce::File (argv[1]));
+        std::printf ("wrote menu preview\n");
+        ed = nullptr;
+        return 0;
+    }
+    if (mode == "saveas") ae->beginSaveAs();
+    if (mode == "autogain") setParam (p, ids::autoGain, 1.0f);
+    if (mode.startsWith ("preset=")) { const int i = mode.fromFirstOccurrenceOf ("=", false, false).getIntValue(); p.presets.load (p.presets.all()[(size_t) i]); }
     for (int i = 0; i < 4; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (17);
 
     if (mode == "resize")   // live window resize: every step must stay fast, the settled size is rebuilt in full quality
     {
         for (int w : { 1000, 1080, 1160, 1240, 1320, 900, 760 })
         {
-            ed->setSize (w, w * 7 / 10);
+            ed->setSize (w, w * AnbuEditor::baseH / AnbuEditor::baseW);
             const auto t0 = juce::Time::getMillisecondCounterHiRes();
             auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
             std::printf ("resize step %d px: paint %.1f ms\n", w, juce::Time::getMillisecondCounterHiRes() - t0);
@@ -112,6 +122,10 @@ int main (int argc, char** argv)
     if (mode.startsWith ("bypass="))   // per-frame cost of the drain animation
     {
         const auto v = juce::StringArray::fromTokens (mode.fromFirstOccurrenceOf ("=", false, false), ",", "");
+        const auto t1b = juce::Time::getMillisecondCounterHiRes();
+        ae->setBypassFrame (0.3f, 0.0);
+        { auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, scale); }
+        std::printf ("drain first frame (still of the panel taken): %.1f ms\n", juce::Time::getMillisecondCounterHiRes() - t1b);
         const auto t2 = juce::Time::getMillisecondCounterHiRes();
         for (int i = 0; i < 20; ++i)
         {

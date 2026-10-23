@@ -3,6 +3,7 @@
 #include <juce_dsp/juce_dsp.h>
 #include <map>
 #include "PluginProcessor.h"
+#include "Presets.h"
 
 // அன்பு v1 panel: a lunchbox of three modules (1000 x 700 design units).
 // The faceplate, knobs, keys, lamps, fader cap and meter faces are pre-rendered 3D assets
@@ -51,6 +52,7 @@ struct ArtLibrary
 };
 
 class AnalyserView;
+class PresetMenuLook;
 }
 
 class AnbuEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -62,7 +64,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
 
     // snapshot tool hooks
     void freezeMeters (float vuDb, float grDb);
@@ -72,7 +76,13 @@ public:
     void setReadout (int knob);
     std::unique_ptr<juce::Component> makeAnalyserView();
 
-    static constexpr int baseW = 1000, baseH = 700;
+    static constexpr int panelY = 36;                       // the preset strip sits above the 1000 x 700 panel
+    static constexpr int baseW = 1000, baseH = 700 + panelY;
+
+    // snapshot tool hooks (presets)
+    void showPresetMenu();
+    void beginSaveAs();
+    juce::Image renderPresetMenuPreview (float scale, const juce::String& openCategory);   // test hook
 
 private:
     void timerCallback() override;
@@ -102,8 +112,10 @@ private:
     };
 
     float scale() const { return (float) getWidth() / (float) baseW; }
-    juce::Point<float> toDesign (juce::Point<float> p) const { return p / scale(); }
-    void repaintDesign (juce::Rectangle<float> r);
+    juce::Point<float> toDesign (juce::Point<float> p) const { return p / scale() - juce::Point<float> (0.0f, (float) panelY); }   // panel units
+    juce::Point<float> toStrip (juce::Point<float> p) const { return p / scale(); }                                             // strip units
+    void repaintDesign (juce::Rectangle<float> r);        // panel units
+    void repaintStrip (juce::Rectangle<float> r);         // strip units
     float pos01 (const juce::Slider&) const;
     juce::Rectangle<float> knobArea (const Knob&) const;
 
@@ -117,24 +129,32 @@ private:
     void drawDisplayDynamic (juce::Graphics&);
     void drawKeys (juce::Graphics&);
     void drawIntroOverlay (juce::Graphics&);
+    void drawStripDynamic (juce::Graphics&);
+    void drawRocker (juce::Graphics&);
     void paintPanel (juce::Graphics&);
 
     // bypass: the colour drains into the bypass key (and flows back out)
     float greyProgress() const;
     void startGrey (bool toGrey);
-    void applyGrey (const juce::Image& src, juce::Image& dst, juce::Rectangle<int> clip, float dpr, float p, double t);
+    void captureDrainSnapshot (float dpr, int W, int H);
+    void composeDrain (juce::Rectangle<int> devClip, float p, double t);
+    void greyRegion (juce::Image& img, juce::Point<int> originDevicePx, float dpr);
     float greyP = 0.0f, greyFrom = 0.0f;
     bool greyTarget = false;
     double greyStart = -1.0, greyFixedT = -1.0;
-    std::vector<juce::uint16> angleCache;
-    int cacheW = 0, cacheH = 0;
-    float cacheDpr = 0.0f;
-    juce::Image fxSrc, fxDst;
-    juce::Rectangle<int> fxClip;
-    double fxPainted = 0.0;
+    // the drain works on a still of the panel taken when it starts (colour + grey copies, device pixels) and
+    // a coarse grid (every 4 device pixels) of angle / distance around the key; only the mask moves per frame
+    juce::Image snapColour, snapGrey, fxDst, fxSrc;
+    bool snapValid = false;
+    float snapDpr = 0.0f;
+    static constexpr int gridQ = 4;
+    int gridW = 0, gridH = 0;
+    std::vector<float> gridAng, gridDist, gridE;
 
     // interaction
     int keyAt (juce::Point<float>) const;          // 0-3 oversampling, 4-5 phase, 6 noise, 7 bypass, -1 none
+    int stripKeyAt (juce::Point<float> stripPt) const;   // 0 previous, 1 next, 2 save, 3 the display, -1 none
+    bool rockerAt (juce::Point<float>) const;
     bool keyOn (int) const;
     void clickKey (int);
     void setChoice (const char* id, int index);
@@ -184,6 +204,20 @@ private:
     // intro
     double introStart = -1.0, introFixed = -1.0;
     bool introRunning = false;
+
+    // presets
+    std::unique_ptr<anbu::ui::PresetMenuLook> menuLook;
+    anbu::ui::Art* stripArt = nullptr;
+    anbu::ui::Art* rockerOn = nullptr;
+    std::array<anbu::ui::Art*, 3> stripKeyArt {};
+    int stripPressed = -1, stripHover = -1;
+    juce::String shownPreset;
+    bool shownModified = false, agState = false;
+    float shownAgDb = 0.0f;
+    juce::TextEditor nameEditor;
+    juce::String stripMessage;          // a short note in the display ("Saved", an error)
+    double stripMessageTime = 0.0;
+    void endSaveAs (bool commit);
 
     // readout
     int readoutKnob = -1;

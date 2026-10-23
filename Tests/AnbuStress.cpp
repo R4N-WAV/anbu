@@ -106,6 +106,27 @@ std::unique_ptr<AnbuProcessor> make (double fs, int block, int channels = 2)
 }
 
 float db (float x) { return 20.0f * std::log10 (juce::jmax (x, 1e-12f)); }
+
+// independent integrated-loudness meter (ITU-R BS.1770: K-weighting, 400 ms blocks every 100 ms, gates)
+double lufs (const std::vector<float>& xl, const std::vector<float>& xr, double fs, size_t from, size_t to)
+{
+    std::vector<double> y;
+    to = juce::jmin (to, xl.size(), xr.size());
+    for (auto* x : { &xl, &xr })
+    {
+        anbu::Biquad sh, hp;
+        sh.highshelf (fs, 1681.9744509555319, 0.7071752369554193, 3.99984385397);
+        hp.highpass (fs, 38.13547087613982, 0.5003270373253953);
+        for (size_t i = 0; i < to; ++i) { const double v = hp.run (sh.run ((*x)[i])); if (i >= from) y.push_back (v); }
+    }
+    const size_t n = y.size() / 2, bl = (size_t) (0.4 * fs), hop = (size_t) (0.1 * fs);
+    std::vector<double> z;
+    for (size_t i = 0; i + bl <= n; i += hop) { double e = 0; for (size_t k = i; k < i + bl; ++k) e += y[k] * y[k] + y[n + k] * y[n + k]; z.push_back (e / (double) bl); }
+    auto mean = [] (const std::vector<double>& v, double above) { double s = 0; int n = 0; for (auto e : v) if (e > above) { s += e; ++n; } return n ? s / n : 0.0; };
+    const double absE = std::pow (10.0, (-70.0 + 0.691) / 10.0);
+    const double rel = 0.1 * mean (z, absE);
+    return -0.691 + 10.0 * std::log10 (mean (z, juce::jmax (absE, rel)) + 1e-30);
+}
 }
 
 int main (int argc, char** argv)
@@ -288,6 +309,102 @@ int main (int argc, char** argv)
             for (int i = 0; i < 256; ++i) { const float v = bb.getSample (0, i); if (blk > 10) maxStep = juce::jmax (maxStep, std::abs (v - last)); last = v; }
         }
         report (maxStep < 0.12f, juce::String::formatted ("Bypass on/off on a running sine: largest step %.3f (crossfaded)", maxStep));
+    }
+
+    // 7c. Auto Gain
+    {
+        // with Mix 0 there is nothing to correct: still a bit-exact delayed copy
+        auto p = make (48000, 512);
+        setParam (*p, ids::os, 2.0f); setParam (*p, ids::mix, 0.0f); setParam (*p, ids::autoGain, 1.0f);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+        for (int k = 0; k < 8; ++k) { b.clear(); p->processBlock (b, m); }
+        const int lat = p->getLatencySamples();
+        Signal sig { Signal::pink, 48000 };
+        std::vector<float> in, out;
+        for (int k = 0; k < 60; ++k)
+        {
+            for (int i = 0; i < 512; ++i) { const float v = sig.next(); b.setSample (0, i, v); b.setSample (1, i, v); in.push_back (v); }
+            p->processBlock (b, m);
+            for (int i = 0; i < 512; ++i) out.push_back (b.getSample (0, i));
+        }
+        float maxErr = 0.0f;
+        for (size_t i = (size_t) lat + 4096; i < out.size(); ++i) maxErr = juce::jmax (maxErr, std::abs (out[i] - in[i - (size_t) lat]));
+        report (maxErr < 1.0e-6f, juce::String::formatted ("Auto Gain with Mix 0: delayed copy of the input, max error %.1e", maxErr));
+    }
+    {
+        // loudness in = loudness out, at heavy settings, and after a jump of the settings
+        // (the extreme case pumps: its own level swings about +-0.5 dB from one 2 s stretch to the next, so a
+        //  steady gain - which Auto Gain must keep, not to undo the compression - can only match it that well)
+        struct Case { float pr, color, input; int mode; double tolSettle, tolLate; };
+        for (const auto& c : { Case { 80, 60, 6, 0, 0.25, 0.1 }, Case { 30, 25, -6, 0, 0.25, 0.1 }, Case { 50, 100, 0, 1, 0.25, 0.1 },
+                               Case { 100, 100, 12, 1, 1.0, 1.0 } })
+        {
+            auto p = make (48000, 512);
+            setParam (*p, ids::autoGain, 1.0f); setParam (*p, ids::pr, 20.0f);
+            const int lat = 4;
+            std::vector<float> in, out, outR;
+            Signal sig { Signal::pink, 48000 };
+            juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+            for (int k = 0; k < (int) (15.0 * 48000 / 512); ++k)
+            {
+                if (k == (int) (3.0 * 48000 / 512))
+                { setParam (*p, ids::pr, c.pr); setParam (*p, ids::color, c.color); setParam (*p, ids::input, c.input); setParam (*p, ids::mode, (float) c.mode); }
+                for (int i = 0; i < 512; ++i) { const float v = sig.next(); b.setSample (0, i, v); b.setSample (1, i, v); in.push_back (v); }
+                p->processBlock (b, m);
+                for (int i = 0; i < 512; ++i) { out.push_back (b.getSample (0, i)); outR.push_back (b.getSample (1, i)); }
+                if (std::getenv ("ANBU_VERBOSE") && k % 24 == 0) std::printf ("      t %.2f s  correction %+.2f dB\n", (double) k * 512 / 48000, p->meterAgDb.load());
+            }
+            std::vector<float> inA (in.size(), 0.0f);
+            for (size_t i = (size_t) lat; i < in.size(); ++i) inA[i] = in[i - (size_t) lat];
+            auto err = [&] (double t0, double t1) { const size_t a = (size_t) (t0 * 48000), z = (size_t) (t1 * 48000); return lufs (out, outR, 48000, a, z) - lufs (inA, inA, 48000, a, z); };
+            const double eSettle = err (4.0, 5.0), eLate = err (9.0, 15.0);
+            report (std::abs (eSettle) < c.tolSettle && std::abs (eLate) < c.tolLate,
+                    juce::String::formatted ("Auto Gain, PR %g Color %g In %+g %s: loudness out - in %+.2f dB (1-2 s after the change), %+.3f dB (6-12 s after); correction %+.1f dB",
+                                             c.pr, c.color, c.input, c.mode ? "Limit" : "Compress", eSettle, eLate, p->meterAgDb.load()));
+        }
+        // silence holds the correction (no runaway), and it stays finite
+        auto p = make (48000, 512);
+        setParam (*p, ids::autoGain, 1.0f); setParam (*p, ids::pr, 70.0f);
+        run (*p, { Signal::pink, 48000 }, 3.0, 512, false);
+        const float before = p->meterAgDb.load();
+        const auto st = run (*p, { Signal::silence, 48000 }, 5.0, 512, false);
+        const float after = p->meterAgDb.load();
+        const auto st2 = run (*p, { Signal::burst, 48000 }, 1.0, 512, true);
+        report (st.finite && st2.finite && std::abs (after - before) < 0.2f,
+                juce::String::formatted ("Auto Gain through 5 s of silence: correction held (%+.2f -> %+.2f dB), finite", before, after));
+    }
+
+    // 7d. presets: the factory bank loads exactly, a user preset saves, loads and deletes, the name survives a reload
+    {
+        auto p = make (48000, 512);
+        auto& pm = p->presets;
+        bool ok = true; int n = 0;
+        for (const auto& pr : pm.all())
+        {
+            if (! pr.factory) continue;
+            pm.load (pr); ++n;
+            for (auto& [id, v] : pr.values) ok = ok && std::abs (p->apvts.getRawParameterValue (id)->load() - v) < 1.0e-3f;
+            ok = ok && pm.currentName() == pr.name && ! pm.isModified();
+        }
+        report (ok && n > 30, juce::String::formatted ("factory presets: %d load exactly and are not marked modified", n));
+        setParam (*p, ids::pr, 63.0f); setParam (*p, ids::color, 41.0f);
+        report (pm.isModified(), "a changed setting marks the preset modified");
+        juce::String err;
+        const juce::String nm = "__anbu_selftest__";
+        const bool saved = pm.saveUser (nm, err);
+        setParam (*p, ids::pr, 5.0f);
+        bool found = false;
+        for (const auto& pr : pm.all())
+            if (! pr.factory && pr.name == nm) { found = true; pm.load (pr); }
+        const bool restored = std::abs (p->apvts.getRawParameterValue (ids::pr)->load() - 63.0f) < 1e-3f;
+        juce::MemoryBlock mb; p->getStateInformation (mb);
+        auto q = make (48000, 512);
+        q->setStateInformation (mb.getData(), (int) mb.getSize());
+        const bool nameKept = q->presets.currentName() == nm && ! q->presets.isModified();
+        bool deleted = false;
+        for (const auto& pr : pm.all()) if (! pr.factory && pr.name == nm) { deleted = pm.deleteUser (pr); break; }
+        report (saved && found && restored && nameKept && deleted,
+                "user preset: save, load, name kept with the session, delete" + (err.isNotEmpty() ? " (" + err + ")" : juce::String()));
     }
 
     // 8. automation storm: every parameter moved every block (incl. OS / phase / mode switching)

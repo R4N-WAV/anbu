@@ -198,6 +198,8 @@ public:
             ch_[c].ex.tau(fs_, 0.02); ch_[c].ep.tau(fs_, 0.02);
             ch_[c].dcd.lp(fs_, 8.0); ch_[c].dco.lp(fs_, 5.0); ch_[c].dch.lp(fs_, 5.0);
             ch_[c].post.lp(fs_, std::min(LN_FPOST, 0.45 * fs_));
+            ch_[c].sLo.lowpass(fs_, SILK_LO, 0.7071); ch_[c].sMid.lowpass(fs_, SILK_SPLIT, 0.7071); ch_[c].sEnv.tau(fs_, 0.04); ch_[c].sDc.lp(fs_, 6.0);
+            ch_[c].sTop.lp(fs_, std::min(SILK_TOP, 0.45 * fs_));
         }
         reset();
     }
@@ -205,12 +207,13 @@ public:
         for (auto& c : ch_) {
             c.bell.reset(); c.bell2.reset(); c.hf0.reset(); for (auto& b : c.eq) b.reset();
             c.vc = 0; c.em2 = c.em3 = c.ef = 0; c.phi.y = 0; c.ex.y = c.ep.y = 1e-12; c.dcd.y = 0; c.dco.y = 0; c.dch.y = 0; c.post.y = 0;
+            c.sLo.reset(); c.sMid.reset(); c.sEnv.y = 0; c.sDc.y = 0; c.sTop.y = 0;
         }
         Gprev_ = 0; Gsprev_ = 0;
     }
-    void setSettings(const Settings& s, double toneAmt, double kappa) {
+    void setSettings(const Settings& s, double toneAmt, double kappa, double silk = 0.0) {
         using namespace consts;
-        pr_ = s.peakReduction; toneAmt_ = toneAmt; kappa_ = kappa;
+        pr_ = s.peakReduction; toneAmt_ = toneAmt; kappa_ = kappa; silk_ = silk;
         mu1_ = interpTableLog(MU1_TAB, pr_); mu2_ = interpTableLog(MU2_TAB, pr_); mu3_ = interpTable(MU3_TAB, pr_);
         bpr_ = interpTable(BPR_TAB, pr_);
         if (pr_ <= 0.0) { mu1_ = mu2_ = mu3_ = 0.0; }
@@ -237,7 +240,9 @@ public:
                 const double t = s.eq[3].run(s.eq[2].run(s.eq[1].run(s.eq[0].run(x)))) * eqG0_[c];
                 x += toneAmt_ * (t - x);
                 double hc = 0.0;
-                if (kappa_ > 0.0) { hc = kappa_ * colorResidual(s, x, c); x += hc; }
+                if (kappa_ > 0.0) hc = kappa_ * colorResidual(s, x, c);
+                if (silk_ > 0.0) hc += silk_ * silkResidual(s, x, c);
+                x += hc;
                 // ---- LA-2A audio path
                 const double ax = std::fabs(x);
                 s.ef += (ax > s.ef ? aEA_ : aER_) * (ax - s.ef);
@@ -276,8 +281,29 @@ private:
     struct Ch {
         Biquad bell, bell2, hf0, eq[4];
         OnePole phi, ex, ep, dcd, dco, dch, post;
+        Biquad sLo, sMid;
+        OnePole sEnv, sDc, sTop;
         double vc = 0, em2 = 0, em3 = 0, ef = 0;
     };
+    // Silk: a biased triode-like curve, run separately in three bands (below 250 Hz, 250 Hz-3 kHz, above 3 kHz).
+    // Only the curve's harmonics are added (its linear part is subtracted), so the tone does not change.
+    // 2nd harmonic leads, each higher order falls away smoothly, everything grows with level (quiet detail stays
+    // clean). Because the bands saturate on their own, bass does not modulate the mids and highs (low IMD),
+    // the top band is driven at half level and the harmonics roll off above 12 kHz: no fizz.
+    // The bias rises a little with the programme level, so the even/odd balance breathes with the performance.
+    static inline double silkCurve(double xd, double b) noexcept {
+        const double tb = std::tanh(b), d1 = 1.0 - tb * tb, u = consts::SILK_DRIVE * xd;
+        return (std::tanh(u + b) - tb) / (consts::SILK_DRIVE * d1) - xd;
+    }
+    inline double silkResidual(Ch& s, double x, int c) noexcept {
+        using namespace consts;
+        const double lo = s.sLo.run(x), rest = x - lo, mid = s.sMid.run(rest), hi = rest - mid;
+        const double env = s.sEnv.run(std::fabs(x));
+        const double b = SILK_BIAS * (c == 0 ? 1.0 : SILK_TOL) * (1.0 + SILK_BREATHE * std::min(env * SILK_DRIVE, 1.0));
+        const double r = silkCurve(lo, b) + silkCurve(mid, b) + silkCurve(SILK_HI * hi, b);
+        s.sDc.run(r);
+        return s.sTop.run(r - s.sDc.y);
+    }
     // Lindell-style residual (flux-modulated gain + amplifier curvature), fitted at THD max (kappa = 1)
     inline double colorResidual(Ch& s, double x, int c) noexcept {
         using namespace consts;
@@ -302,16 +328,19 @@ private:
     }
     double fs_ = 192000, dt_ = 1 / 192000.0, aE_ = 0, aEA_ = 0, aER_ = 0, Cn_ = 0.05, M_ = 1;
     int os_ = 4;
-    double pr_ = 50, toneAmt_ = 0, kappa_ = 0, mu1_ = 0, mu2_ = 0, mu3_ = 0, bpr_ = 0, eqG0_[2] = { 1, 1 };
+    double pr_ = 50, toneAmt_ = 0, kappa_ = 0, silk_ = 0, mu1_ = 0, mu2_ = 0, mu3_ = 0, bpr_ = 0, eqG0_[2] = { 1, 1 };
     double Gprev_ = 0, Gsprev_ = 0;
     Ch ch_[2];
 };
 
 // ------------------------------------------------------------------------------------------ Color knob mapping
-// The last quarter of the knob pushes further: up to twice the harmonics (+6 dB) and 1.5x the tone curve at 100 %.
+// 0..25 %: the fitted console character (tone curve fades in, Lindell-default harmonics at 25 %).
+// Above that the console's bass-heavy odd residual levels off (it would otherwise turn a tone square), and the
+// Silk stage takes over: level-dependent, 2nd-harmonic-led, smoothly decaying harmonics.
 inline double colorPush(double c) { const double u = std::clamp((c - 0.75) / 0.25, 0.0, 1.0); return u * u * (3.0 - 2.0 * u); }
-inline double colorKappa(double c) { c = std::clamp(c, 0.0, 1.0); return 2.0 * c * c * c * (1.0 + colorPush(c)); }   // 0.25 -> Lindell default, ~0.8 -> THD max, 1.0 -> +12 dB over THD max
-inline double colorTone(double c) { c = std::clamp(c, 0.0, 1.0); return std::min(1.0, c / 0.25) + 0.5 * colorPush(c); }
+inline double colorKappa(double c) { c = std::clamp(c, 0.0, 1.0); const double x = 2.0 * c * c * c / 0.22; return 0.22 * x / std::sqrt(1.0 + x * x); }
+inline double colorSilk(double c) { c = std::clamp(c, 0.0, 1.0); return 1.3 * c * c * c * (1.0 + 0.3 * colorPush(c)); }
+inline double colorTone(double c) { c = std::clamp(c, 0.0, 1.0); return std::min(1.0, c / 0.25) + 0.2 * colorPush(c); }
 
 // ------------------------------------------------------------------------------------------ display curve (editor)
 // Steady-state frequency response of the linear part of the path for the current settings and slow cell

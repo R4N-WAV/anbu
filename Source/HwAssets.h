@@ -19,4 +19,11 @@ inline constexpr float faderRefY = 439.0f;
 inline constexpr Rect face { 288, 56, 534, 236 }, screen { 285, 323, 540, 210 };
 inline constexpr Rect pivot { 479, 276, 152, 16 };
 inline constexpr Rect logoPatch { 30, 44, 208, 86 };
+inline constexpr Rect rocker { 720, 629, 64, 32 };
+inline constexpr float rockerCx = 752.0f, rockerCy = 645.0f, rockerW = 60.0f, rockerH = 27.0f;
+// preset strip above the panel (strip-local design units; the panel starts at stripH)
+inline constexpr int stripH = 36;
+inline constexpr Rect stripDisplay { 355, 5, 290, 26 };
+inline constexpr Rect stripKeys[3] = { { 318, 6, 30, 24 }, { 652, 6, 30, 24 }, { 694, 6, 52, 24 } };
+inline constexpr Rect stripKeySprites[3] = { { 315, 3, 36, 30 }, { 649, 3, 36, 30 }, { 691, 3, 58, 30 } };
 }

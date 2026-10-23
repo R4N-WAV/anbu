@@ -67,6 +67,11 @@ BANK_PH = (590, 580, 240, 40)
 NOISE_KEY = (889, 462, 64, 32)
 KEY_TEXT = ['OFF', '2×', '4×', '8×', 'LOW LATENCY', 'LINEAR', 'NOISE', 'BYPASS']
 BYPASS_KEY = (896, 617, 50, 22)
+ROCKER = (752, 645, 60, 27)          # Auto Gain rocker: centre x, y, w, h (under the PHASE bank)
+HEADER_H = 36                        # preset strip above the panel (rendered at virtual y 700 .. 736)
+HY = 700                             # virtual y of the strip's top edge in scene space
+HDR_DISP = (355, 5, 290, 26)         # strip-local: display window
+HDR_KEYS = [(318, 6, 30, 24, '‹'), (652, 6, 30, 24, '›'), (694, 6, 52, 24, 'SAVE')]
 
 def key_rect(i):
     if i < 4: return (BANK_OS[0] + 4 + 69 * i, BANK_OS[1] + 4, 65, 32)
@@ -76,7 +81,10 @@ def key_rect(i):
 
 def vu_frac(d): return (10 ** (d / 20) - 0.1) / (10 ** (3 / 20) - 0.1)
 def meter_angle(f): return -SPAN + 2 * SPAN * f
-def gr_angle(d): return meter_angle(1 - d / 20.0)          # GR reads right to left: 0 at the right
+def gr_frac(d): return math.log(1 + d / 3.0) / math.log(1 + 20 / 3.0)   # progressive: 1 dB steps are wide at the top of the scale
+def gr_angle(d): return meter_angle(1 - gr_frac(d))      # GR reads right to left: 0 at the right
+GR_LABELS = (0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20)
+GR_MINOR = (0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 7, 9, 11, 13, 14, 16, 17, 18, 19)
 
 # ------------------------------------------------------------------ scene maps
 class Scene:
@@ -184,7 +192,12 @@ def noise(sc, sl, name, sigma_u, amp):
         rng = np.random.default_rng(zlib.crc32(name.encode()))
         H, W = int(round(700 * sc.k)), int(round(1000 * sc.k))
         n = ndimage.gaussian_filter(rng.standard_normal((H, W)).astype(np.float32), sigma_u * sc.k)
-        _NOISE[key] = n / (n.std() + 1e-9)
+        n = n / (n.std() + 1e-9)
+        # rows below the panel (the preset strip is rendered there): an independent field
+        rng2 = np.random.default_rng(zlib.crc32((name + '_hdr').encode()))
+        Hx = int(round((HEADER_H + 4) * sc.k))
+        n2 = ndimage.gaussian_filter(rng2.standard_normal((Hx, W)).astype(np.float32), sigma_u * sc.k)
+        _NOISE[key] = np.concatenate([n, n2 / (n2.std() + 1e-9)], 0)
     ox, oy = int(round(sc.x0 * sc.k)), int(round(sc.y0 * sc.k))
     f = _NOISE[key]
     return f[sl[0].start + oy:sl[0].stop + oy, sl[1].start + ox:sl[1].stop + ox] * amp
@@ -438,11 +451,10 @@ def meter_face(sc, out_mode):
     ink = np.maximum(ink, arc * 0.9)
     labels = []
     if not out_mode:
-        for d in range(21):
-            if d % 4 == 0: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 14, METER_R, 1.5))
-            else: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 7, METER_R, 1.0) * 0.75)
-        for d in (0, 4, 8, 12, 16, 20):
-            a = gr_angle(d); labels.append((str(d), px + (METER_R + 18) * math.sin(a), py - (METER_R + 18) * math.cos(a)))
+        for d in GR_LABELS: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 14, METER_R, 1.5))
+        for d in GR_MINOR: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 7, METER_R, 1.0) * 0.75)
+        for d in GR_LABELS:
+            a = gr_angle(d); labels.append((str(d), px + (METER_R + 17) * math.sin(a), py - (METER_R + 17) * math.cos(a)))
         cap = 'GAIN REDUCTION'
     else:
         for d in (-20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3): ink = np.maximum(ink, seg(meter_angle(vu_frac(d)), METER_R - 14, METER_R, 1.5))
@@ -452,7 +464,7 @@ def meter_face(sc, out_mode):
             labels.append((t, px + (METER_R + 18) * math.sin(a), py - (METER_R + 18) * math.cos(a)))
         cap = 'OUTPUT LEVEL'
     full = np.zeros((sc.H, sc.W), np.float32); full[sl] = ink * inside
-    items = [dict(font=F_BAR6, size=16, text=t, x=x, y=y) for t, x, y in labels]
+    items = [dict(font=F_BAR6, size=16 if out_mode else 14.5, text=t, x=x, y=y) for t, x, y in labels]
     items.append(dict(font=F_BAR5, size=10, text=cap, x=FACE[0] + 28, y=FACE[1] + 206, anchor='l', track=0.14))
     items.append(dict(font=F_BAR5, size=10, text='dB', x=FACE[0] + FACE[2] - 28, y=FACE[1] + 206, anchor='r', track=0.06))
     full = np.maximum(full, sc.text_mask(items))
@@ -474,6 +486,96 @@ def meter_face(sc, out_mode):
         dm = sc.cov(r2 - 74) * sc.cov(sd_rrect(X2, Y2, *FACE, 3))
         hd = FACE_H + 6.0 * np.sqrt(np.clip(1 - (r2 / 74) ** 2, 0, 1))
         sc.put(sl2, dm, h=hd, alb=lin([8, 6, 5]), rough=0.22)
+
+def rocker(sc, on):
+    """Auto Gain rocker: black bezel, glossy pad that rocks left (OFF) / right (ON); the ON half lights up"""
+    cx, cy, w, h = ROCKER
+    x0, y0 = cx - w / 2, cy - h / 2
+    g = sc.grid(x0 - 2, y0 - 2, x0 + w + 2, y0 + h + 2)
+    if g is None: return
+    sl, X, Y = g
+    d = sd_rrect(X, Y, x0, y0, w, h, 4)
+    m = sc.cov(d)
+    e = 1 - (1 - np.clip(-d / 1.6, 0, 1)) ** 2
+    sc.put(sl, m, h=PLATE_H + 1.5 * e, alb=lin([30, 28, 31]), rough=0.34, metal=0.6)
+    di = sd_rrect(X, Y, x0 + 3, y0 + 3, w - 6, h - 6, 2.5)
+    sc.put(sl, sc.cov(di), h=PLATE_H - 1.2, alb=hexc('070303'), rough=0.8)
+    # the pad: two halves meeting at a ridge; the pressed half sits low, the other stands up
+    pw, ph = w - 8, h - 8
+    dp = sd_rrect(X, Y, cx - pw / 2, cy - ph / 2, pw, ph, 2)
+    mp = sc.cov(dp)
+    u = np.clip((X - cx) / (pw / 2), -1, 1)
+    tilt = (-u if on else u) * 4.2
+    dish = -0.35 * (1 - (2 * np.abs(u) - 1) ** 2)           # each half slightly concave
+    edge = 1 - (1 - np.clip(-dp / 1.2, 0, 1)) ** 2
+    hp = PLATE_H + 1.4 + (tilt + dish + 0.9) * edge
+    sc.put(sl, mp, h=hp, alb=lin([26, 24, 27]), rough=0.3, metal=0.0)
+    sc.put(sl, sc.cov(np.abs(X - cx) - 0.35) * mp, alb=lin([8, 7, 8]), rough=0.6)   # seam between the halves
+    # legends on the halves; ON glows amber when switched on
+    lo = sc.text_mask([dict(font=F_BAR7, size=8.5, text='OFF', x=cx - pw / 4, y=cy, track=0.1)])
+    ln = sc.text_mask([dict(font=F_BAR7, size=8.5, text='ON', x=cx + pw / 4, y=cy, track=0.1)])
+    sc.ink(lo, FACE_INK * (0.35 if on else 0.75), raise_h=0.0, rough=0.5)
+    if on: sc.ink(ln, KEYON * 0.6, raise_h=0.0, rough=0.4, emis=KEYON * 1.25)
+    else: sc.ink(ln, FACE_INK * 0.75, raise_h=0.0, rough=0.5)
+
+# ------------------------------------------------------------------ preset strip (rendered below the panel in scene space)
+def header_key(sc, rect, label, down):
+    x, y, w, h = rect
+    y = y + HY
+    g = sc.grid(x - 3, y - 3, x + w + 3, y + h + 3)
+    if g is None: return
+    sl, X, Y = g
+    dr = sd_rrect(X, Y, x - 2, y - 2, w + 4, h + 4, 4)
+    sc.put(sl, sc.cov(dr), h=HDR_H - 1.6 * np.clip(-dr / 0.8, 0, 1), alb=hexc('0b0505'), rough=0.75)
+    d = sd_rrect(X, Y, x, y, w, h, 3)
+    m = sc.cov(d)
+    top = (HDR_H - 0.4) if down else (HDR_H + 1.4)
+    base = HDR_H - 1.6
+    e = 1 - (1 - np.clip(-d / 1.4, 0, 1)) ** 2
+    dome = 0.2 * (1 - ((X - (x + w / 2)) / (w / 2)) ** 2) * (1 - ((Y - (y + h / 2)) / (h / 2)) ** 2)
+    t = np.clip((Y - y) / h, 0, 1)[..., None]
+    c0, c1 = (hexc('6e1a1b'), hexc('7a2021')) if down else (hexc('a8352f'), hexc('8a2424'))
+    sc.put(sl, m, h=base + (top - base + dome) * e, alb=c0[None, None, :] * (1 - t) + c1[None, None, :] * t, rough=0.3)
+    big = label in ('‹', '›')
+    if big:   # a chevron, drawn as geometry
+        mx, my = x + w / 2, y + h / 2 + (0.3 if down else 0)
+        sgn = -1 if label == '‹' else 1
+        a = (mx - sgn * 2.2, my - 5.0); b = (mx + sgn * 2.8, my); c = (mx - sgn * 2.2, my + 5.0)
+        legm = np.zeros((sc.H, sc.W), np.float32)
+        legm[sl] = np.maximum(sc.cov(sd_seg(X, Y, *a, *b, 1.1)), sc.cov(sd_seg(X, Y, *b, *c, 1.1)))
+    else:
+        legm = sc.text_mask([dict(font=F_BAR6, size=10, text=label, x=x + w / 2, y=y + h / 2 + (0.3 if down else 0), track=0.1)])
+    if down: sc.ink(legm, KEYON * 0.6, raise_h=0.0, rough=0.4, emis=KEYON * 1.0)
+    else: sc.ink(legm, hexc('e3a596') * 0.9, raise_h=0.0, rough=0.4)
+
+HDR_H = 2.4      # strip surface height
+
+def build_header(state, k=K):
+    sc = Scene((0, HY, 1000, HEADER_H), k)
+    chassis(sc)
+    g = sc.grid(0, HY, 1000, HY + HEADER_H)
+    sl, X, Y = g
+    # black anodised strip, edge to edge, brushed along its length, bevelled lower edge
+    d = Y - (HY + 32)
+    m = sc.cov(d)
+    e = np.clip(-d / 1.6, 0, 1); prof = HDR_H * (1 - (1 - e) ** 2)
+    col = lin([27, 25, 28])[None, None, :] * (1 + noise(sc, sl, 'strip_c', 1.4, 0.035)[..., None])
+    sc.put(sl, m, h=prof + noise(sc, sl, 'strip_h', 0.3, 0.004) * e, alb=col, rough=0.42, metal=0.55, aniso=0.7, t=(np.ones_like(X), np.zeros_like(X)))
+    # display window (bezel + screen, like the analyser screen)
+    dx, dy, dw, dh = HDR_DISP
+    PH = PLATE_H
+    globals()['PLATE_H'] = HDR_H
+    bezel(sc, (dx - 4, HY + dy - 3, dw + 8, dh + 6), (dx, HY + dy, dw, dh), HDR_H - 1.4, hexc('130506'), 0.3)
+    globals()['PLATE_H'] = PH
+    for i, (x, y, w, h, lab) in enumerate(HDR_KEYS):
+        header_key(sc, (x, y, w, h), lab, state.get('hkeys_down', [False] * 3)[i])
+    gold = sc.text_mask([dict(font=F_BAR6, size=10.5, text='PRESETS', x=306, y=HY + 18, anchor='r', track=0.16)])
+    sc.ink(gold, GOLD, raise_h=0.03, rough=0.38, metal=0.35)
+    for sx, a in ((14, 52), (986, 131)):
+        PH = PLATE_H; globals()['PLATE_H'] = HDR_H
+        screw(sc, sx, HY + 16, a)
+        globals()['PLATE_H'] = PH
+    return sc
 
 def display(sc):
     bezel(sc, DISP, SCREEN, PLATE_H - 1.2, hexc('130506'), 0.3)
@@ -552,7 +654,8 @@ def build(region, state, k=K):
               dict(font=F_BAR6, size=11, text='COMPRESS', x=71, y=LAMP_YC, anchor='l', track=0.14),
               dict(font=F_BAR6, size=11, text='LIMIT', x=71, y=LAMP_YL, anchor='l', track=0.14),
               dict(font=F_BAR6, size=10.5, text='OVERSAMPLING', x=420, y=566, track=0.16),
-              dict(font=F_BAR6, size=10.5, text='PHASE', x=710, y=566, track=0.16)]
+              dict(font=F_BAR6, size=10.5, text='PHASE', x=710, y=566, track=0.16),
+              dict(font=F_BAR6, size=10.5, text='AUTO GAIN', x=ROCKER[0] - ROCKER[2] / 2 - 12, y=ROCKER[1], anchor='r', track=0.16)]
     # fader scale
     g = sc.grid(150, 330, 210, 545)
     if g is not None:
@@ -611,6 +714,7 @@ def build(region, state, k=K):
     bank(sc, BANK_OS); bank(sc, BANK_PH)
     for i in range(8):
         key(sc, i, state['keys_down'][i], state['keys_lit'][i])
+    rocker(sc, state.get('rocker', False))
     return sc
 
 # ------------------------------------------------------------------ render + post
@@ -630,6 +734,7 @@ def render(sc, binary, work, samples=24):
 def light_falloff(sc, img):
     # the studio key is a large softbox up and to the left: a gentle fall-off across the panel
     ys = sc.y0 + (np.arange(sc.H) + 0.5) / sc.k
+    if sc.y0 >= HY: ys = ys - HY - HEADER_H
     xs = sc.x0 + (np.arange(sc.W) + 0.5) / sc.k
     X, Y = np.meshgrid(xs, ys)
     d = np.hypot((X + 150) / 1000.0, (Y + 150) / 700.0)

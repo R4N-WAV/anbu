@@ -293,6 +293,10 @@ juce::Rectangle<float> keyRect (int i)
     if (i == 6) return { 889.0f, 462.0f, 64.0f, 32.0f };
     return { 896.0f, 617.0f, 50.0f, 22.0f };      // bypass
 }
+const juce::Rectangle<float> rockerR { HW::rockerCx - HW::rockerW / 2, HW::rockerCy - HW::rockerH / 2, HW::rockerW, HW::rockerH };
+const juce::Rectangle<float> rockerHit = rockerR.expanded (4.0f).withLeft (rockerR.getX() - 92.0f);   // the AUTO GAIN legend too
+const juce::Rectangle<float> stripDispR = R (HW::stripDisplay);
+static_assert (HW::stripH == AnbuEditor::panelY, "the preset strip height must match the render");
 float keyFlashX (int i) { return i < 4 ? 300.0f + 70.0f * (float) i : i < 6 ? 610.0f + 120.0f * (float) (i - 4) : 921.0f; }
 
 const juce::Rectangle<float> logoWordR { 24.0f, 52.0f, 220.0f, 48.4f }, logoByR { 24.0f, 102.0f, 220.0f, 21.3f };
@@ -302,6 +306,8 @@ const juce::String logoRest = juce::String (juce::CharPointer_UTF8 ("\xe0\xae\xa
 
 // needle scale
 float vuFrac (float d) { return (std::pow (10.0f, d / 20.0f) - 0.1f) / (std::pow (10.0f, 3.0f / 20.0f) - 0.1f); }
+// GR scale: progressive (same as the rendered face, tools/hw): every dB is wide near the top of the scale
+float grFrac (float d) { d = juce::jlimit (0.0f, 21.5f, d); return std::log (1.0f + d / 3.0f) / std::log (1.0f + 20.0f / 3.0f); }
 float fracAngle (float f) { return -meterSpan + 2.0f * meterSpan * f; }
 
 // analyser maths shared by the panel and the window
@@ -352,6 +358,107 @@ void drawExpandIcon (juce::Graphics& g, float x, float y, juce::Colour c)
 
 const char* const knobNames[6] = { "Peak reduction", "Input", "Output", "Mix", "Noise level", "Color" };
 const char* const knobIds[5] = { "peakReduction", "inputGain", "outputGain", "mix", "noiseLevel" };
+}
+
+// ============================================================================================ preset menu
+namespace anbu::ui
+{
+// A dark menu in the panel's palette (after FabFilter's preset menus): roomy rows, quiet separators, gold
+// section headers, an amber bar under the pointer and an amber dot on the loaded preset.
+class PresetMenuLook : public juce::LookAndFeel_V4
+{
+public:
+    explicit PresetMenuLook (const Fonts& f) : fonts (f) {}
+    float uiScale = 1.0f;
+
+    juce::Font getPopupMenuFont() override { return fonts.ui (500, 15.0f * uiScale); }
+    int getPopupMenuBorderSize() override { return juce::roundToInt (6.0f * uiScale); }
+    void drawPopupMenuBackground (juce::Graphics& g, int w, int h) override
+    {
+        const juce::Rectangle<float> r (0.0f, 0.0f, (float) w, (float) h);
+        g.setGradientFill (juce::ColourGradient::vertical (hex (0x1d0b0b), 0.0f, hex (0x130606), (float) h));
+        g.fillRect (r);
+        g.setColour (theme().zari.withAlpha (0.45f));
+        g.drawRect (r, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.fillRect (1.0f, 1.0f, (float) w - 2.0f, 1.0f);
+    }
+    void getIdealPopupMenuItemSize (const juce::String& t, bool isSeparator, int, int& w, int& h) override
+    {
+        if (isSeparator) { w = 50; h = juce::roundToInt (11.0f * uiScale); return; }
+        const auto f = getPopupMenuFont();
+        h = juce::roundToInt (26.0f * uiScale);
+        w = juce::roundToInt (juce::GlyphArrangement::getStringWidth (f, t)) + juce::roundToInt (64.0f * uiScale);
+    }
+    void drawPopupMenuSectionHeader (juce::Graphics& g, const juce::Rectangle<int>& area, const juce::String& name) override
+    {
+        const auto f = fonts.ui (600, 11.0f * uiScale);
+        g.setFont (f);
+        g.setColour (theme().label.withAlpha (0.9f));
+        juce::String spaced;
+        for (auto c : name.toUpperCase()) { spaced << juce::String::charToString (c) << juce::String::charToString (0x2009); }
+        g.drawText (spaced.trimEnd(), area.toFloat().withTrimmedLeft (14.0f * uiScale).withTrimmedTop (4.0f * uiScale), juce::Justification::centredLeft, false);
+    }
+    void drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator, bool isActive, bool isHighlighted,
+                            bool isTicked, bool hasSubMenu, const juce::String& t, const juce::String& shortcut, const juce::Drawable*,
+                            const juce::Colour*) override
+    {
+        const auto& T = theme();
+        auto r = area.toFloat();
+        if (isSeparator)
+        {
+            g.setColour (T.zari.withAlpha (0.22f));
+            g.fillRect (r.getX() + 10.0f * uiScale, r.getCentreY(), r.getWidth() - 20.0f * uiScale, 1.0f);
+            return;
+        }
+        if (isHighlighted && isActive)
+        {
+            g.setColour (T.lamp.withAlpha (0.17f));
+            g.fillRoundedRectangle (r.reduced (4.0f * uiScale, 1.0f * uiScale), 3.0f * uiScale);
+            g.setColour (T.lamp.withAlpha (0.8f));
+            g.fillRoundedRectangle (r.getX() + 4.0f * uiScale, r.getY() + 5.0f * uiScale, 2.0f * uiScale, r.getHeight() - 10.0f * uiScale, 1.0f);
+        }
+        if (isTicked)
+        {
+            const float d = 6.0f * uiScale;
+            g.setColour (T.lamp.withAlpha (0.35f));
+            g.fillEllipse (r.getX() + 13.0f * uiScale - d, r.getCentreY() - d, 2 * d, 2 * d);
+            g.setColour (T.lamp);
+            g.fillEllipse (r.getX() + 13.0f * uiScale - 3.0f * uiScale, r.getCentreY() - 3.0f * uiScale, 6.0f * uiScale, 6.0f * uiScale);
+        }
+        const auto col = ! isActive ? hex (0x6f6656) : isHighlighted ? T.value : isTicked ? hex (0xffd79a) : hex (0xe2d2b3);
+        g.setFont (getPopupMenuFont());
+        g.setColour (col);
+        auto tr = r.withTrimmedLeft (26.0f * uiScale).withTrimmedRight (26.0f * uiScale);
+        g.drawText (t, tr, juce::Justification::centredLeft, true);
+        if (shortcut.isNotEmpty())
+        {
+            g.setFont (fonts.ui (500, 12.5f * uiScale));
+            g.setColour (hex (0x8f8574));
+            g.drawText (shortcut, tr, juce::Justification::centredRight, true);
+        }
+        if (hasSubMenu)
+        {
+            juce::Path c;
+            const float x = r.getRight() - 15.0f * uiScale, y = r.getCentreY(), k = 3.5f * uiScale;
+            c.startNewSubPath (x - k * 0.6f, y - k); c.lineTo (x + k * 0.6f, y); c.lineTo (x - k * 0.6f, y + k);
+            g.setColour (isHighlighted ? T.value : T.label.withAlpha (0.8f));
+            g.strokePath (c, juce::PathStrokeType (1.4f * uiScale, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+    }
+    void drawPopupMenuUpDownArrow (juce::Graphics& g, int w, int h, bool isScrollUpArrow) override
+    {
+        juce::Path c;
+        const float x = (float) w * 0.5f, y = (float) h * 0.5f, k = 4.0f * uiScale;
+        if (isScrollUpArrow) { c.startNewSubPath (x - k, y + k * 0.5f); c.lineTo (x, y - k * 0.5f); c.lineTo (x + k, y + k * 0.5f); }
+        else { c.startNewSubPath (x - k, y - k * 0.5f); c.lineTo (x, y + k * 0.5f); c.lineTo (x + k, y - k * 0.5f); }
+        g.setColour (theme().label);
+        g.strokePath (c, juce::PathStrokeType (1.4f * uiScale));
+    }
+
+private:
+    const Fonts& fonts;
+};
 }
 
 // ============================================================================================ analyser window
@@ -634,6 +741,28 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     lampL = &library->get ("lamp_l_png");
     noLogo = &library->get ("nologo_jpg");
     for (int i = 0; i < 8; ++i) keyArt[(size_t) i] = &library->get (("key_" + juce::String (i) + "_png").toRawUTF8());
+    stripArt = &library->get ("strip_jpg");
+    rockerOn = &library->get ("rocker_on_png");
+    for (int i = 0; i < 3; ++i) stripKeyArt[(size_t) i] = &library->get (("hkey_" + juce::String (i) + "_png").toRawUTF8());
+    menuLook = std::make_unique<anbu::ui::PresetMenuLook> (fonts);
+
+    // preset name entry (Save): typed straight into the strip's display
+    nameEditor.setLookAndFeel (&invisible);
+    nameEditor.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+    nameEditor.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    nameEditor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+    nameEditor.setColour (juce::TextEditor::textColourId, hex (0xffd79a));
+    nameEditor.setColour (juce::TextEditor::highlightColourId, theme().lamp.withAlpha (0.35f));
+    nameEditor.setColour (juce::TextEditor::highlightedTextColourId, hex (0xfff1d8));
+    nameEditor.setColour (juce::CaretComponent::caretColourId, theme().lamp);
+    nameEditor.setJustification (juce::Justification::centred);
+    nameEditor.setInputRestrictions (48, {});
+    nameEditor.setTextToShowWhenEmpty ("Name your preset", hex (0x8a6a4a));
+    nameEditor.setSelectAllWhenFocused (true);
+    nameEditor.onReturnKey = [this] { endSaveAs (true); };
+    nameEditor.onEscapeKey = [this] { endSaveAs (false); };
+    nameEditor.onFocusLost = [this] { endSaveAs (false); };
+    addChildComponent (nameEditor);
 
     for (int k = 0; k < 5; ++k)
     {
@@ -690,6 +819,10 @@ AnbuEditor::AnbuEditor (AnbuProcessor& p) : AudioProcessorEditor (&p), proc (p)
     spec.out.fill (-140.0f); spec.in.fill (-140.0f); spec.harm.fill (-140.0f); spec.peak.fill (-140.0f); spec.tone.fill (0.0f);
 
     for (int i = 0; i < 8; ++i) keyState[(size_t) i] = keyOn (i);
+    agState = proc.apvts.getRawParameterValue (ids::autoGain)->load() > 0.5f;
+    shownAgDb = proc.meterAgDb.load();
+    shownPreset = proc.presets.currentName();
+    shownModified = proc.presets.isModified();
     greyTarget = keyState[7];
     greyP = greyTarget ? 1.0f : 0.0f;
     modeLimit = (int) std::lround (proc.apvts.getRawParameterValue (ids::mode)->load()) == 1;
@@ -717,6 +850,7 @@ AnbuEditor::~AnbuEditor()
     analyserWindow = nullptr;
     for (auto& kn : knobs) kn.slider.setLookAndFeel (nullptr);
     fader.setLookAndFeel (nullptr);
+    nameEditor.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
 
@@ -729,12 +863,19 @@ void AnbuEditor::resized()
         const auto& a = HW::knobs[kn.art];
         const float r = (a.rr + 6.0f) * s;
         kn.slider.radius = r;
-        kn.slider.setBounds (juce::Rectangle<float> (a.cx * s - r, a.cy * s - r, 2 * r, 2 * r).toNearestInt());
+        kn.slider.setBounds (juce::Rectangle<float> (a.cx * s - r, (a.cy + (float) panelY) * s - r, 2 * r, 2 * r).toNearestInt());
     }
-    fader.setBounds ((faderHit * s).toNearestInt());
+    fader.setBounds ((faderHit.translated (0.0f, (float) panelY) * s).toNearestInt());
+    nameEditor.setBounds ((stripDispR.reduced (40.0f, 3.0f) * s).toNearestInt());
+    nameEditor.applyFontToAllText (fonts.ui (600, 15.0f * s));
 }
 
 void AnbuEditor::repaintDesign (juce::Rectangle<float> r)
+{
+    repaint ((r.translated (0.0f, (float) panelY) * scale()).getSmallestIntegerContainer().expanded (2));
+}
+
+void AnbuEditor::repaintStrip (juce::Rectangle<float> r)
 {
     repaint ((r * scale()).getSmallestIntegerContainer().expanded (2));
 }
@@ -801,9 +942,11 @@ void AnbuEditor::drawArt (juce::Graphics& g, anbu::ui::Art& art, juce::Rectangle
 void AnbuEditor::renderStatic (juce::Graphics& g, float ppu)
 {
     const auto& T = theme();
+    drawArt (g, *stripArt, { 0.0f, 0.0f, (float) baseW, (float) panelY });
+    g.addTransform (juce::AffineTransform::translation (0.0f, (float) panelY));
     {
         const auto& img = bg->at (ppu);
-        g.drawImageTransformed (img, juce::AffineTransform::scale ((float) baseW / (float) img.getWidth(), (float) baseH / (float) img.getHeight()));
+        g.drawImageTransformed (img, juce::AffineTransform::scale ((float) baseW / (float) img.getWidth(), 700.0f / (float) img.getHeight()));
     }
     if (staticOut) drawArt (g, *faceOut, faceR);
 
@@ -917,7 +1060,7 @@ void AnbuEditor::drawModeLamps (juce::Graphics& g, float flash)
 float AnbuEditor::meterFrac() const
 {
     // fraction of the scale from the left end. GR reads right to left: no reduction rests at the right.
-    return proc.uiMeterOut ? juce::jlimit (-0.04f, 1.06f, vuFrac (vuDb)) : 1.0f - juce::jlimit (0.0f, 1.04f, grDb / 20.0f);
+    return proc.uiMeterOut ? juce::jlimit (-0.04f, 1.06f, vuFrac (vuDb)) : 1.0f - grFrac (grDb);
 }
 
 void AnbuEditor::drawMeterDynamic (juce::Graphics& g)
@@ -961,6 +1104,12 @@ void AnbuEditor::drawDisplayDynamic (juce::Graphics& g)
 {
     if (readoutKnob >= 0 && readoutAlpha > 0.0f)
         text (g, fonts.ui (600, 14.0f), readoutText(), readoutR, juce::Justification::centredLeft, hex (0xf1e3c6).withAlpha (readoutAlpha));
+    else if (agState)
+    {
+        const int tenths = juce::roundToInt (shownAgDb * 10.0f);
+        const auto v = (tenths > 0 ? "+" : tenths < 0 ? minus : juce::String()) + juce::String (std::abs (tenths) / 10) + "." + juce::String (std::abs (tenths) % 10);
+        text (g, fonts.ui (600, 14.0f), "Auto gain  " + v + " dB", readoutR, juce::Justification::centredLeft, hex (0xf1e3c6).withAlpha (0.55f));
+    }
 
     g.saveState();
     g.reduceClipRegion (juce::Rectangle<float> (plotX0, plotY0, plotX1 - plotX0, plotY1 - plotY0).toNearestInt());
@@ -1025,7 +1174,7 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
     if (ov > 0.0f)
     {
         g.setColour (T.chassis.withAlpha (ov));
-        g.fillRect (0.0f, 0.0f, (float) baseW, (float) baseH);
+        g.fillRect (0.0f, (float) -panelY, (float) baseW, (float) baseH);
     }
 
     // அ ignites like a lamp, the rest of the word grows out of it, then it shrinks to its place and debosses
@@ -1094,33 +1243,40 @@ void AnbuEditor::drawIntroOverlay (juce::Graphics& g)
 void AnbuEditor::paint (juce::Graphics& g)
 {
     const float p = greyProgress();
-    if (p <= 0.0005f) { paintPanel (g); return; }
+    const bool animating = greyStart >= 0.0 || greyFixedT >= 0.0;
+    if (p <= 0.0005f && ! animating) { paintPanel (g); return; }
 
-    // bypassed or draining: paint the panel offscreen, then pull the colour out of it
     const float dpr = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
     const auto clip = g.getClipBounds().getIntersection (getLocalBounds());
     if (clip.isEmpty()) return;
-    const int w = juce::jmax (1, (int) std::ceil ((float) clip.getWidth() * dpr)), h = juce::jmax (1, (int) std::ceil ((float) clip.getHeight() * dpr));
-    const double now = juce::Time::getMillisecondCounterHiRes();
-    const bool sizeChanged = fxSrc.getWidth() != w || fxSrc.getHeight() != h;
-    if (sizeChanged)
+
+    if (animating)
     {
-        fxSrc = juce::Image (juce::Image::ARGB, w, h, false, juce::SoftwareImageType());
-        fxDst = juce::Image (juce::Image::ARGB, w, h, false, juce::SoftwareImageType());
+        // the colour drains out of (or flows back into) a still of the panel taken when the key was pressed:
+        // per frame only the mask moves, so the panel is not repainted while it runs
+        const int W = juce::roundToInt ((float) getWidth() * dpr), H = juce::roundToInt ((float) getHeight() * dpr);
+        if (! snapValid || snapColour.getWidth() != W || snapColour.getHeight() != H || std::abs (snapDpr - dpr) > 1.0e-3f)
+            captureDrainSnapshot (dpr, W, H);
+        const auto dev = juce::Rectangle<int>::leftTopRightBottom ((int) std::floor ((float) clip.getX() * dpr), (int) std::floor ((float) clip.getY() * dpr),
+                                                                   (int) std::ceil ((float) clip.getRight() * dpr), (int) std::ceil ((float) clip.getBottom() * dpr))
+                             .getIntersection ({ 0, 0, W, H });
+        const double t = greyFixedT >= 0.0 ? greyFixedT : (juce::Time::getMillisecondCounterHiRes() - greyStart) * 0.001;
+        composeDrain (dev, p, t);
+        g.drawImageTransformed (fxDst, juce::AffineTransform::scale (1.0f / dpr));
+        return;
     }
-    // while the colour drains, the painted panel is reused for a few frames (the effect itself runs every frame)
-    const bool reuse = greyStart >= 0.0 && ! sizeChanged && clip == fxClip && now - fxPainted < 70.0;
-    if (! reuse)
+
+    // bypassed and settled: paint just the area that changed, in grey
+    const int w = juce::jmax (1, (int) std::ceil ((float) clip.getWidth() * dpr)), h = juce::jmax (1, (int) std::ceil ((float) clip.getHeight() * dpr));
+    if (fxSrc.getWidth() != w || fxSrc.getHeight() != h) fxSrc = juce::Image (juce::Image::RGB, w, h, true, juce::SoftwareImageType());
+    else fxSrc.clear (fxSrc.getBounds());
     {
         juce::Graphics gi (fxSrc);
         gi.addTransform (juce::AffineTransform::translation ((float) -clip.getX(), (float) -clip.getY()).scaled (dpr));
         paintPanel (gi);
-        fxPainted = now;
-        fxClip = clip;
     }
-    const double t = greyFixedT >= 0.0 ? greyFixedT : (greyStart >= 0.0 ? (juce::Time::getMillisecondCounterHiRes() - greyStart) * 0.001 : 0.0);
-    applyGrey (fxSrc, fxDst, clip, dpr, p, t);
-    g.drawImageTransformed (fxDst, juce::AffineTransform::scale ((float) clip.getWidth() / (float) w, (float) clip.getHeight() / (float) h)
+    greyRegion (fxSrc, { juce::roundToInt ((float) clip.getX() * dpr), juce::roundToInt ((float) clip.getY() * dpr) }, dpr);
+    g.drawImageTransformed (fxSrc, juce::AffineTransform::scale ((float) clip.getWidth() / (float) w, (float) clip.getHeight() / (float) h)
                                        .translated ((float) clip.getX(), (float) clip.getY()));
 }
 
@@ -1143,6 +1299,9 @@ void AnbuEditor::paintPanel (juce::Graphics& g)
     g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
     g.drawImageTransformed (staticLayer, juce::AffineTransform::scale ((float) baseW / (float) staticLayer.getWidth(),
                                                                        (float) baseH / (float) staticLayer.getHeight()));
+    if (g.clipRegionIntersects (juce::Rectangle<int> (0, 0, baseW, panelY)))
+        drawStripDynamic (g);
+    g.addTransform (juce::AffineTransform::translation (0.0f, (float) panelY));
 
     for (auto& kn : knobs)
         if (g.clipRegionIntersects (knobArea (kn).getSmallestIntegerContainer()))
@@ -1160,6 +1319,8 @@ void AnbuEditor::paintPanel (juce::Graphics& g)
     if (g.clipRegionIntersects (screenR.getSmallestIntegerContainer()))
         drawDisplayDynamic (g);
     drawKeys (g);
+    if (g.clipRegionIntersects (rockerR.expanded (6.0f).getSmallestIntegerContainer()))
+        drawRocker (g);
 
     if (introRunning)
         drawIntroOverlay (g);
@@ -1169,8 +1330,17 @@ void AnbuEditor::paintPanel (juce::Graphics& g)
 namespace
 {
 constexpr float drainMs = 900.0f;                         // one full drain (or return) takes 0.9 s
-const juce::Point<float> drainCentre { 921.0f, 628.0f };  // the bypass key
+const juce::Point<float> drainCentre { 921.0f, 628.0f };  // the bypass key (panel units)
 const juce::Rectangle<float> drainKeep { 894.0f, 615.0f, 54.0f, 26.0f };   // the key keeps its colour
+constexpr float drainEdge = 22.0f, drainSmear = 20.0f;    // soft front and inward pull (panel units)
+
+inline void toGrey (const juce::uint8* c, juce::uint8* d) noexcept
+{
+    // B G R (A) in memory. Rec.709 luma with a touch of contrast, integer maths. Alpha (if any) is left alone.
+    const int l = (19 * c[0] + 183 * c[1] + 54 * c[2]) >> 8;
+    const int v = juce::jlimit (0, 255, l + (((l - 128) * 15) >> 8));
+    d[0] = d[1] = d[2] = (juce::uint8) v;
+}
 }
 
 static double greyDurationMs (float from, bool toGrey)
@@ -1184,6 +1354,7 @@ void AnbuEditor::startGrey (bool toGrey)
     greyTarget = toGrey;
     greyStart = juce::Time::getMillisecondCounterHiRes();
     greyFixedT = -1.0;
+    snapValid = false;                                     // a fresh still of the panel as it is now
 }
 
 float AnbuEditor::greyProgress() const
@@ -1199,39 +1370,71 @@ void AnbuEditor::setBypassFrame (float progress, double seconds)
 {
     greyStart = -1.0;
     greyP = juce::jlimit (0.0f, 1.0f, progress);
-    greyFixedT = seconds;
+    greyFixedT = seconds;                                  // the still of the panel is kept between frames
     repaint();
 }
 
-// src/dst: the clip region at device resolution. p: 0 = full colour, 1 = fully grey.
-void AnbuEditor::applyGrey (const juce::Image& src, juce::Image& dst, juce::Rectangle<int> clip, float dpr, float p, double t)
+// grey an image of the window (origin: its top-left in device pixels); the bypass key keeps its colour
+void AnbuEditor::greyRegion (juce::Image& img, juce::Point<int> origin, float dpr)
 {
-    const float s = scale();
-    const float pxPerUnit = s * dpr;
-    // angle of every device pixel around the key (cached per window size)
-    const int W = juce::roundToInt ((float) getWidth() * dpr), H = juce::roundToInt ((float) getHeight() * dpr);
-    if (W != cacheW || H != cacheH || std::abs (dpr - cacheDpr) > 1.0e-3f)
+    juce::Image::BitmapData bm (img, juce::Image::BitmapData::readWrite);
+    const float ppu = scale() * dpr;
+    const auto keep = (drainKeep.translated (0.0f, (float) panelY) * ppu).toNearestInt().translated (-origin.x, -origin.y);
+    for (int y = 0; y < bm.height; ++y)
     {
-        cacheW = W; cacheH = H; cacheDpr = dpr;
-        angleCache.assign ((size_t) W * (size_t) H, 0);
-        for (int y = 0; y < H; ++y)
+        auto* row = bm.getLinePointer (y);
+        const bool keepRow = y >= keep.getY() && y < keep.getBottom();
+        for (int x = 0; x < bm.width; ++x)
         {
-            const float dy = ((float) y + 0.5f) / pxPerUnit - drainCentre.y;
-            for (int x = 0; x < W; ++x)
-            {
-                const float dx = ((float) x + 0.5f) / pxPerUnit - drainCentre.x;
-                const float a = std::atan2 (dy, dx);       // -pi .. pi
-                angleCache[(size_t) y * (size_t) W + (size_t) x] = (juce::uint16) (((a + juce::MathConstants<float>::pi) / juce::MathConstants<float>::twoPi) * 1023.999f);
-            }
+            if (keepRow && x >= keep.getX() && x < keep.getRight()) continue;
+            auto* px = row + x * bm.pixelStride;
+            toGrey (px, px);
         }
     }
+}
+
+void AnbuEditor::captureDrainSnapshot (float dpr, int W, int H)
+{
+    snapColour = juce::Image (juce::Image::RGB, W, H, true, juce::SoftwareImageType());   // opaque: drawn as a plain copy
+    {
+        juce::Graphics gi (snapColour);
+        gi.addTransform (juce::AffineTransform::scale (dpr));
+        paintPanel (gi);
+    }
+    snapGrey = snapColour.createCopy();
+    greyRegion (snapGrey, {}, dpr);
+    if (fxDst.getWidth() != W || fxDst.getHeight() != H) fxDst = juce::Image (juce::Image::RGB, W, H, false, juce::SoftwareImageType());
+
+    // angle and distance from the key at every grid node (gridQ device pixels apart)
+    const float ppu = scale() * dpr;
+    gridW = W / gridQ + 2; gridH = H / gridQ + 2;
+    gridAng.assign ((size_t) (gridW * gridH), 0.0f);
+    gridDist.assign ((size_t) (gridW * gridH), 0.0f);
+    gridE.assign ((size_t) (gridW * gridH), 0.0f);
+    for (int gy = 0; gy < gridH; ++gy)
+        for (int gx = 0; gx < gridW; ++gx)
+        {
+            const float dx = ((float) (gx * gridQ) + 0.5f) / ppu - drainCentre.x;
+            const float dy = ((float) (gy * gridQ) + 0.5f) / ppu - (float) panelY - drainCentre.y;
+            const size_t i = (size_t) (gy * gridW + gx);
+            gridAng[i] = (std::atan2 (dy, dx) + juce::MathConstants<float>::pi) / juce::MathConstants<float>::twoPi * 1024.0f;
+            gridDist[i] = std::sqrt (dx * dx + dy * dy);
+        }
+    snapDpr = dpr;
+    snapValid = true;
+}
+
+// write the drained frame into fxDst over dev (device pixels). p: 0 = full colour, 1 = fully grey.
+void AnbuEditor::composeDrain (juce::Rectangle<int> dev, float p, double t)
+{
+    if (dev.isEmpty()) return;
+    const float dpr = snapDpr, ppu = scale() * dpr;
 
     // the drain front: a radius per direction, wobbling with tendrils that change shape while it moves
     constexpr int nA = 1024;
-    float Rtab[nA];
-    const float edge = 22.0f, smear = 20.0f;                // design units
+    float Rtab[nA + 1];
     const float Dmax = 1120.0f;                             // farthest corner from the key
-    const float Rb = p * (Dmax + 2.0f * edge);
+    const float Rb = p * (Dmax + 2.0f * drainEdge);
     const float A = 0.42f * std::pow (juce::jmax (0.0f, std::sin (juce::MathConstants<float>::pi * juce::jlimit (0.0f, 1.0f, p))), 0.8f);
     const float tt = (float) t;
     for (int a = 0; a < nA; ++a)
@@ -1246,67 +1449,317 @@ void AnbuEditor::applyGrey (const juce::Image& src, juce::Image& dst, juce::Rect
         f = (f >= 0.0f ? 1.0f : -1.0f) * std::pow (std::abs (f), 0.65f);   // sharpen into tendrils
         Rtab[a] = Rb * (1.0f + A * f);
     }
+    Rtab[nA] = Rtab[0];
 
-    const juce::Image::BitmapData in (src, juce::Image::BitmapData::readOnly);
-    juce::Image::BitmapData out (dst, juce::Image::BitmapData::writeOnly);
-    const int w = in.width, h = in.height;
-    const int ox = juce::roundToInt ((float) clip.getX() * dpr), oy = juce::roundToInt ((float) clip.getY() * dpr);
-    auto grey = [] (const juce::uint8* c, float& r, float& g, float& b)
-    {
-        const float l = 0.2126f * c[2] + 0.7152f * c[1] + 0.0722f * c[0];       // ARGB in memory: B G R A
-        const float v = juce::jlimit (0.0f, 255.0f, (l - 128.0f) * 1.06f + 128.0f);
-        r = g = b = v;
-    };
-    float Rmin = Rtab[0], Rmax = Rtab[0];
-    for (int a = 1; a < nA; ++a) { Rmin = juce::jmin (Rmin, Rtab[a]); Rmax = juce::jmax (Rmax, Rtab[a]); }
-    const float Rinner = Rmin - edge;                       // everything closer is fully grey
-    for (int y = 0; y < h; ++y)
-    {
-        const int ay = juce::jlimit (0, cacheH - 1, oy + y);
-        const float Y = ((float) ay + 0.5f) / pxPerUnit, dy = Y - drainCentre.y;
-        const auto* srow = in.getLinePointer (y);
-        auto* drow = out.getLinePointer (y);
-        std::memcpy (drow, srow, (size_t) (w * in.pixelStride));      // untouched by default
-        if (std::abs (dy) >= Rmax) continue;
-        // only the part of the row the front can reach this frame
-        const float half = std::sqrt (Rmax * Rmax - dy * dy);
-        const int x0 = juce::jmax (0, (int) std::floor ((drainCentre.x - half) * pxPerUnit) - ox - 1);
-        const int x1 = juce::jmin (w, (int) std::ceil ((drainCentre.x + half) * pxPerUnit) - ox + 1);
-        for (int x = x0; x < x1; ++x)
+    // mask at the grid nodes the clip touches
+    const int gx0 = juce::jmax (0, dev.getX() / gridQ), gx1 = juce::jmin (gridW - 1, dev.getRight() / gridQ + 1);
+    const int gy0 = juce::jmax (0, dev.getY() / gridQ), gy1 = juce::jmin (gridH - 1, dev.getBottom() / gridQ + 1);
+    const float invEdge = 1.0f / drainEdge;
+    for (int gy = gy0; gy <= gy1; ++gy)
+        for (int gx = gx0; gx <= gx1; ++gx)
         {
-            const int ax = juce::jlimit (0, cacheW - 1, ox + x);
-            const float X = ((float) ax + 0.5f) / pxPerUnit, dx = X - drainCentre.x;
-            const auto* sp = srow + x * in.pixelStride;
-            auto* dp = drow + x * out.pixelStride;
-            if (drainKeep.contains (X, Y)) { dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; continue; }
-            const float d = std::sqrt (dx * dx + dy * dy);
-            if (d < Rinner)
+            const size_t i = (size_t) (gy * gridW + gx);
+            const float af = gridAng[i];
+            const int ai = juce::jlimit (0, nA - 1, (int) af);
+            const float r = Rtab[ai] + (Rtab[ai + 1] - Rtab[ai]) * (af - (float) ai);
+            gridE[i] = (r - gridDist[i]) * invEdge;
+        }
+
+    const juce::Image::BitmapData col (snapColour, juce::Image::BitmapData::readOnly);
+    const juce::Image::BitmapData gry (snapGrey, juce::Image::BitmapData::readOnly);
+    juce::Image::BitmapData out (fxDst, juce::Image::BitmapData::writeOnly);
+    const int ps = out.pixelStride;
+    const int Wd = col.width, Hd = col.height;
+    const float cxDev = drainCentre.x * ppu, cyDev = (drainCentre.y + (float) panelY) * ppu;
+    const float smearPx = drainSmear * ppu;
+    for (int y = dev.getY(); y < dev.getBottom(); ++y)
+    {
+        const int gy = y / gridQ;
+        const float fy = (float) (y - gy * gridQ) / (float) gridQ;
+        const auto* crow = col.getLinePointer (y);
+        const auto* grow = gry.getLinePointer (y);
+        auto* orow = out.getLinePointer (y);
+        const float* e0 = gridE.data() + (size_t) gy * (size_t) gridW;
+        const float* e1 = e0 + gridW;
+        int x = dev.getX();
+        while (x < dev.getRight())
+        {
+            const int gx = x / gridQ;
+            const float eL = e0[gx] + (e1[gx] - e0[gx]) * fy, eR = e0[gx + 1] + (e1[gx + 1] - e0[gx + 1]) * fy;
+            const int kind = (eL <= 0.0f && eR <= 0.0f) ? 0 : (eL >= 1.0f && eR >= 1.0f) ? 2 : 1;
+            if (kind != 1)
             {
-                float r, g, b; grey (sp, r, g, b);
-                dp[0] = (juce::uint8) b; dp[1] = (juce::uint8) g; dp[2] = (juce::uint8) r; dp[3] = sp[3];
+                // a run of cells that are all colour (or all grey): one copy
+                int gxe = gx + 1;
+                while (gxe * gridQ < dev.getRight())
+                {
+                    const float a = e0[gxe] + (e1[gxe] - e0[gxe]) * fy, b = e0[gxe + 1] + (e1[gxe + 1] - e0[gxe + 1]) * fy;
+                    if (kind == 0 ? (a > 0.0f || b > 0.0f) : (a < 1.0f || b < 1.0f)) break;
+                    ++gxe;
+                }
+                const int xe = juce::jmin (dev.getRight(), gxe * gridQ);
+                std::memcpy (orow + x * ps, (kind == 0 ? crow : grow) + x * ps, (size_t) ((xe - x) * ps));
+                x = xe;
                 continue;
             }
-            const float e = (Rtab[angleCache[(size_t) ay * (size_t) cacheW + (size_t) ax]] - d) / edge;
-            if (e <= 0.0f) { dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; continue; }
-            if (e >= 1.0f)
+            const int xEnd = juce::jmin (dev.getRight(), (gx + 1) * gridQ);
+            for (; x < xEnd; ++x)
             {
-                float r, g, b; grey (sp, r, g, b);
-                dp[0] = (juce::uint8) b; dp[1] = (juce::uint8) g; dp[2] = (juce::uint8) r; dp[3] = sp[3];
-                continue;
+                const float e = eL + (eR - eL) * ((float) (x - gx * gridQ) / (float) gridQ);
+                auto* dp = orow + x * ps;
+                if (e <= 0.0f) { std::memcpy (dp, crow + x * ps, (size_t) ps); continue; }
+                if (e >= 1.0f) { std::memcpy (dp, grow + x * ps, (size_t) ps); continue; }
+                // in the front: colour is pulled in towards the key (sampled from further out) and drained
+                const float dx = (float) x + 0.5f - cxDev, dy = (float) y + 0.5f - cyDev;
+                const float d = std::sqrt (dx * dx + dy * dy);
+                const float bell = 4.0f * e * (1.0f - e);                         // 0 at the front's edges, 1 mid-front
+                const float k = bell * smearPx / juce::jmax (d, 1.0f);
+                const int sx = juce::jlimit (0, Wd - 1, x + (int) (dx * k)), sy = juce::jlimit (0, Hd - 1, y + (int) (dy * k));
+                const auto* cp = col.getPixelPointer (sx, sy);
+                juce::uint8 gp[3];
+                toGrey (cp, gp);
+                const float m = e * e * (3.0f - 2.0f * e);
+                const float rim = 1.0f - 0.22f * bell;
+                dp[0] = (juce::uint8) juce::jlimit (0.0f, 255.0f, ((float) cp[0] + m * ((float) gp[0] - (float) cp[0])) * rim);
+                dp[1] = (juce::uint8) juce::jlimit (0.0f, 255.0f, ((float) cp[1] + m * ((float) gp[1] - (float) cp[1])) * rim);
+                dp[2] = (juce::uint8) juce::jlimit (0.0f, 255.0f, ((float) cp[2] + m * ((float) gp[2] - (float) cp[2])) * rim);
             }
-            // in the front: colour is pulled in towards the key (sampled from further out) and drained
-            const float k = std::sin (juce::MathConstants<float>::pi * e) * smear * pxPerUnit / juce::jmax (d, 1.0f);   // strongest mid-front, none at its edges
-            const int sx = juce::jlimit (0, w - 1, x + juce::roundToInt (dx * k)), sy = juce::jlimit (0, h - 1, y + juce::roundToInt (dy * k));
-            const auto* cp = in.getPixelPointer (sx, sy);
-            float r, g, b; grey (cp, r, g, b);
-            const float m = e * e * (3.0f - 2.0f * e);
-            const float rim = 1.0f - 0.22f * std::sin (juce::MathConstants<float>::pi * e);
-            dp[0] = (juce::uint8) juce::jlimit (0.0f, 255.0f, (cp[0] + m * (b - cp[0])) * rim);
-            dp[1] = (juce::uint8) juce::jlimit (0.0f, 255.0f, (cp[1] + m * (g - cp[1])) * rim);
-            dp[2] = (juce::uint8) juce::jlimit (0.0f, 255.0f, (cp[2] + m * (r - cp[2])) * rim);
-            dp[3] = cp[3];
         }
     }
+    // the key keeps its colour
+    const auto keep = (drainKeep.translated (0.0f, (float) panelY) * ppu).toNearestInt().getIntersection (dev);
+    for (int y = keep.getY(); y < keep.getBottom(); ++y)
+        std::memcpy (out.getLinePointer (y) + keep.getX() * ps, col.getLinePointer (y) + keep.getX() * ps, (size_t) (keep.getWidth() * ps));
+}
+
+// ============================================================================================ preset strip + rocker
+void AnbuEditor::drawStripDynamic (juce::Graphics& g)
+{
+    const auto& T = theme();
+    for (int i = 0; i < 3; ++i)
+        if (stripPressed == i) drawArt (g, *stripKeyArt[(size_t) i], R (HW::stripKeySprites[i]));
+
+    const auto d = stripDispR;
+    // the display glows faintly when the pointer is over it
+    if (stripHover == 3 && ! nameEditor.isVisible())
+    {
+        g.setColour (T.lamp.withAlpha (0.07f));
+        g.fillRoundedRectangle (d.reduced (1.0f), 2.0f);
+    }
+    const auto amber = hex (0xffd08a), dim = hex (0xb4875a);
+    const auto fName = fonts.ui (600, 14.5f), fSmall = fonts.ui (600, 9.5f);
+    auto glowText = [&] (const juce::Font& f, const juce::String& t, juce::Rectangle<float> r, juce::Justification j, juce::Colour c)
+    {
+        juce::GlyphArrangement ga;
+        ga.addFittedText (f, t, r.getX(), r.getY(), r.getWidth(), r.getHeight(), j, 1, 1.0f);
+        juce::Path pth;
+        ga.createPath (pth);
+        shadow (g, pth, c.withAlpha (0.45f), 6.0f, {});
+        g.setColour (c);
+        g.fillPath (pth);
+    };
+    if (nameEditor.isVisible())
+    {
+        text (g, fSmall, "SAVE AS", d.withTrimmedLeft (10.0f).withWidth (60.0f), juce::Justification::centredLeft, dim);
+        text (g, fSmall, "ENTER", d.withTrimmedRight (10.0f), juce::Justification::centredRight, dim);
+        return;
+    }
+    const double age = juce::Time::getMillisecondCounterHiRes() - stripMessageTime;
+    if (stripMessage.isNotEmpty() && age < 1600.0)
+    {
+        glowText (fName, stripMessage, d.reduced (40.0f, 0.0f), juce::Justification::centred, amber.withMultipliedAlpha (age < 1200.0 ? 1.0f : (float) (1.0 - (age - 1200.0) / 400.0)));
+        return;
+    }
+    auto name = shownPreset.isEmpty() ? juce::String ("Untitled") : shownPreset;
+    const auto cat = proc.presets.currentCategory();
+    if (cat.isNotEmpty() || proc.presets.currentIsUser())
+    {
+        juce::String c = (cat.isNotEmpty() ? cat : juce::String ("My presets")).toUpperCase();
+        text (g, fSmall, c, d.withTrimmedLeft (10.0f).withWidth (78.0f), juce::Justification::centredLeft, dim);
+    }
+    const auto nameR = d.reduced (84.0f, 0.0f);
+    glowText (fName, name, nameR, juce::Justification::centred, amber);
+    if (shownModified)
+    {
+        const float w = juce::jmin (nameR.getWidth(), juce::GlyphArrangement::getStringWidth (fName, name));
+        text (g, fonts.ui (600, 13.0f), "*", { nameR.getCentreX() + 0.5f * w + 2.0f, d.getY() + 3.0f, 12.0f, 14.0f }, juce::Justification::centredLeft, dim);
+    }
+    // menu caret
+    juce::Path c;
+    const float cx = d.getRight() - 14.0f, cy = d.getCentreY();
+    c.startNewSubPath (cx - 4.0f, cy - 2.0f); c.lineTo (cx, cy + 2.0f); c.lineTo (cx + 4.0f, cy - 2.0f);
+    g.setColour (stripHover == 3 ? amber : dim);
+    g.strokePath (c, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+void AnbuEditor::drawRocker (juce::Graphics& g)
+{
+    if (agState) drawArt (g, *rockerOn, R (HW::rocker));
+}
+
+int AnbuEditor::stripKeyAt (juce::Point<float> sp) const
+{
+    if (sp.y < 0.0f || sp.y >= (float) panelY) return -1;
+    for (int i = 0; i < 3; ++i)
+        if (R (HW::stripKeys[i]).expanded (1.0f).contains (sp)) return i;
+    if (stripDispR.contains (sp)) return 3;
+    return -1;
+}
+
+bool AnbuEditor::rockerAt (juce::Point<float> p) const { return rockerHit.contains (p); }
+
+void AnbuEditor::showPresetMenu()
+{
+    auto& pm = proc.presets;
+    pm.rescan();
+    const auto& all = pm.all();
+    const int cur = pm.currentListIndex();
+    menuLook->uiScale = juce::jlimit (0.85f, 1.6f, scale());
+
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (menuLook.get());
+    menu.addItem (1, all[0].name, true, cur == 0);
+    // factory bank, one sub-menu per category (in the bank's order)
+    menu.addSectionHeader ("Factory");
+    juce::StringArray cats;
+    for (size_t i = 1; i < all.size(); ++i) if (all[i].factory) cats.addIfNotAlreadyThere (all[i].category);
+    for (auto& c : cats)
+    {
+        juce::PopupMenu sub;
+        bool has = false;
+        for (size_t i = 1; i < all.size(); ++i)
+            if (all[i].factory && all[i].category == c) { sub.addItem ((int) i + 1, all[i].name, true, (int) i == cur); has = has || (int) i == cur; }
+        menu.addSubMenu (c, sub, true, nullptr, has);
+    }
+    // the user's presets: loose ones first, then one sub-menu per folder
+    menu.addSectionHeader ("My presets");
+    bool anyUser = false;
+    juce::StringArray ucats;
+    for (size_t i = 0; i < all.size(); ++i)
+        if (! all[i].factory)
+        {
+            anyUser = true;
+            if (all[i].category.isEmpty()) menu.addItem ((int) i + 1, all[i].name, true, (int) i == cur);
+            else ucats.addIfNotAlreadyThere (all[i].category);
+        }
+    for (auto& c : ucats)
+    {
+        juce::PopupMenu sub;
+        bool has = false;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (! all[i].factory && all[i].category == c) { sub.addItem ((int) i + 1, all[i].name, true, (int) i == cur); has = has || (int) i == cur; }
+        menu.addSubMenu (c, sub, true, nullptr, has);
+    }
+    if (! anyUser) menu.addItem (-1, "None saved yet", false, false);
+    menu.addSeparator();
+    menu.addItem (10001, "Save as...");
+    const bool curUser = cur >= 0 && ! all[(size_t) cur].factory;
+    if (curUser)
+    {
+        menu.addItem (10002, "Save \"" + all[(size_t) cur].name + "\"", pm.isModified());
+        menu.addItem (10003, "Delete \"" + all[(size_t) cur].name + "\"");
+    }
+    menu.addItem (10004, "Show preset folder");
+
+    const auto area = (stripDispR * scale()).toNearestInt();
+    juce::Component::SafePointer<AnbuEditor> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withParentComponent (this).withTargetScreenArea (localAreaToGlobal (area))
+                            .withMinimumWidth (area.getWidth()).withStandardItemHeight (juce::roundToInt (26.0f * menuLook->uiScale)),
+                        [safe] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto& pm2 = safe->proc.presets;
+        const auto& l = pm2.all();
+        if (r >= 1 && r <= (int) l.size()) { pm2.load (l[(size_t) r - 1]); return; }
+        if (r == 10001) { safe->beginSaveAs(); return; }
+        const int c2 = pm2.currentListIndex();
+        if (c2 < 0 || l[(size_t) c2].factory)
+        {
+            if (r == 10004) { auto d = anbu::PresetManager::userFolder(); d.createDirectory(); d.startAsProcess(); }
+            return;
+        }
+        const auto p = l[(size_t) c2];
+        if (r == 10002) { juce::String err; if (pm2.saveUser (p.name, err)) { safe->stripMessage = "Saved"; safe->stripMessageTime = juce::Time::getMillisecondCounterHiRes(); } }
+        else if (r == 10003) { if (pm2.deleteUser (p)) { safe->stripMessage = "Deleted"; safe->stripMessageTime = juce::Time::getMillisecondCounterHiRes(); } }
+        else if (r == 10004) { auto d = anbu::PresetManager::userFolder(); d.createDirectory(); d.startAsProcess(); }
+        safe->repaintStrip (stripDispR.expanded (4.0f));
+    });
+}
+
+// test hook: the menu (and one open sub-menu) drawn item by item through the menu's look-and-feel
+juce::Image AnbuEditor::renderPresetMenuPreview (float sc, const juce::String& openCategory)
+{
+    auto& pm = proc.presets;
+    const auto& all = pm.all();
+    const int cur = pm.currentListIndex();
+    menuLook->uiScale = sc;
+    struct Item { juce::String text; bool sep = false, header = false, sub = false, ticked = false, active = true, hi = false; };
+    std::vector<Item> main, sub;
+    main.push_back ({ all[0].name, false, false, false, cur == 0 });
+    main.push_back ({ "Factory", false, true });
+    juce::StringArray cats;
+    for (size_t i = 1; i < all.size(); ++i) if (all[i].factory) cats.addIfNotAlreadyThere (all[i].category);
+    for (auto& c : cats)
+    {
+        Item it { c, false, false, true }; it.hi = c == openCategory; main.push_back (it);
+        if (c == openCategory)
+            for (size_t i = 1; i < all.size(); ++i)
+                if (all[i].factory && all[i].category == c) sub.push_back ({ all[i].name, false, false, false, (int) i == cur });
+    }
+    main.push_back ({ "My presets", false, true });
+    main.push_back ({ "None saved yet", false, false, false, false, false });
+    main.push_back ({ {}, true });
+    main.push_back ({ "Save as..." });
+    main.push_back ({ "Show preset folder" });
+    auto draw = [&] (juce::Graphics& g, const std::vector<Item>& items, int x0, int y0, int w)
+    {
+        int h = 0;
+        for (auto& it : items) { int iw, ih; menuLook->getIdealPopupMenuItemSize (it.text, it.sep, 0, iw, ih); h += it.header ? juce::roundToInt (26.0f * sc) : ih; }
+        const int b = menuLook->getPopupMenuBorderSize();
+        g.saveState(); g.setOrigin (x0, y0);
+        menuLook->drawPopupMenuBackground (g, w, h + 2 * b);
+        int y = b;
+        for (auto& it : items)
+        {
+            int iw, ih; menuLook->getIdealPopupMenuItemSize (it.text, it.sep, 0, iw, ih);
+            if (it.header) { ih = juce::roundToInt (26.0f * sc); menuLook->drawPopupMenuSectionHeader (g, { 0, y, w, ih }, it.text); }
+            else menuLook->drawPopupMenuItem (g, { 0, y, w, ih }, it.sep, it.active, it.hi, it.ticked, it.sub, it.text, {}, nullptr, nullptr);
+            y += ih;
+        }
+        g.restoreState();
+        return h + 2 * b;
+    };
+    const int w1 = juce::roundToInt (290.0f * sc), w2 = juce::roundToInt (240.0f * sc);
+    juce::Image img (juce::Image::ARGB, w1 + w2 + juce::roundToInt (40.0f * sc), juce::roundToInt (620.0f * sc), true);
+    juce::Graphics g (img);
+    g.fillAll (theme().chassis);
+    draw (g, main, juce::roundToInt (10.0f * sc), juce::roundToInt (10.0f * sc), w1);
+    if (! sub.empty()) draw (g, sub, w1 + juce::roundToInt (14.0f * sc), juce::roundToInt (60.0f * sc), w2);
+    return img;
+}
+
+void AnbuEditor::beginSaveAs()
+{
+    nameEditor.setText (proc.presets.currentIsUser() ? proc.presets.currentName() : juce::String(), juce::dontSendNotification);
+    nameEditor.applyFontToAllText (fonts.ui (600, 15.0f * scale()));
+    nameEditor.setVisible (true);
+    nameEditor.grabKeyboardFocus();
+    nameEditor.selectAll();
+    repaintStrip (stripDispR.expanded (4.0f));
+}
+
+void AnbuEditor::endSaveAs (bool commit)
+{
+    if (! nameEditor.isVisible()) return;
+    const auto name = nameEditor.getText().trim();
+    nameEditor.setVisible (false);
+    if (commit && name.isNotEmpty())
+    {
+        juce::String err;
+        stripMessage = proc.presets.saveUser (name, err) ? juce::String ("Saved") : err;
+        stripMessageTime = juce::Time::getMillisecondCounterHiRes();
+    }
+    repaintStrip (stripDispR.expanded (4.0f));
 }
 
 // ============================================================================================ interaction
@@ -1387,7 +1840,23 @@ void AnbuEditor::setReadout (int knob)
 void AnbuEditor::mouseDown (const juce::MouseEvent& e)
 {
     if (introRunning) { skipIntro(); return; }
+    const auto sp = toStrip (e.position);
+    if (sp.y < (float) panelY)
+    {
+        const int k = stripKeyAt (sp);
+        if (k == 3) { showPresetMenu(); return; }
+        if (k >= 0)
+        {
+            stripPressed = k;
+            repaintStrip (R (HW::stripKeySprites[k]).expanded (2.0f));
+            if (k == 0) proc.presets.step (-1);
+            else if (k == 1) proc.presets.step (1);
+            else beginSaveAs();
+        }
+        return;
+    }
     const auto p = toDesign (e.position);
+    if (rockerAt (p)) { setChoice (ids::autoGain, agState ? 0 : 1); return; }
     if (expandR.contains (p)) { openAnalyser(); return; }
     if (pillGR.contains (p)) { toggleMeterMode (false); return; }
     if (pillOut.contains (p)) { toggleMeterMode (true); return; }
@@ -1398,16 +1867,32 @@ void AnbuEditor::mouseDown (const juce::MouseEvent& e)
     if (k >= 0) clickKey (k);
 }
 
+void AnbuEditor::mouseUp (const juce::MouseEvent&)
+{
+    if (stripPressed >= 0)
+    {
+        repaintStrip (R (HW::stripKeySprites[stripPressed]).expanded (2.0f));
+        stripPressed = -1;
+    }
+}
+
+void AnbuEditor::mouseExit (const juce::MouseEvent&)
+{
+    if (stripHover >= 0) { stripHover = -1; repaintStrip (stripDispR.expanded (4.0f)); }
+}
+
 bool AnbuEditor::clickableAt (juce::Point<float> p) const
 {
-    return expandR.contains (p) || pillGR.contains (p) || pillOut.contains (p) || p.getDistanceFrom ({ modeBtnX, modeBtnY }) <= 19.0f
+    return rockerAt (p) || expandR.contains (p) || pillGR.contains (p) || pillOut.contains (p) || p.getDistanceFrom ({ modeBtnX, modeBtnY }) <= 19.0f
         || juce::Rectangle<float> (44.0f, lampYC - 11.0f, 130.0f, 22.0f).contains (p)
         || juce::Rectangle<float> (44.0f, lampYL - 11.0f, 130.0f, 22.0f).contains (p) || keyAt (p) >= 0;
 }
 
 void AnbuEditor::mouseMove (const juce::MouseEvent& e)
 {
-    setMouseCursor (clickableAt (toDesign (e.position)) ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    const int h = stripKeyAt (toStrip (e.position));
+    if (h != stripHover) { stripHover = h; repaintStrip (stripDispR.expanded (4.0f)); }
+    setMouseCursor (h >= 0 || clickableAt (toDesign (e.position)) ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
 }
 
 void AnbuEditor::freezeMeters (float vu, float gr)
@@ -1540,8 +2025,33 @@ void AnbuEditor::timerCallback()
     if (greyStart >= 0.0)
     {
         greyP = greyProgress();
-        if (juce::Time::getMillisecondCounterHiRes() - greyStart > greyDurationMs (greyFrom, greyTarget)) { greyP = greyTarget ? 1.0f : 0.0f; greyStart = -1.0; }
+        if (juce::Time::getMillisecondCounterHiRes() - greyStart > greyDurationMs (greyFrom, greyTarget))
+        {
+            greyP = greyTarget ? 1.0f : 0.0f;
+            greyStart = -1.0;
+            snapValid = false;                               // the still is no longer needed
+            snapColour = juce::Image(); snapGrey = juce::Image(); fxDst = juce::Image();
+        }
         repaint();
+    }
+
+    // preset strip: name / modified mark (presets, host automation, undo ...), messages fading out
+    {
+        const auto name = proc.presets.currentName();
+        const bool mod = proc.presets.isModified();
+        if (name != shownPreset || mod != shownModified) { shownPreset = name; shownModified = mod; repaintStrip (stripDispR.expanded (4.0f)); }
+        if (stripMessage.isNotEmpty())
+        {
+            repaintStrip (stripDispR.expanded (4.0f));
+            if (juce::Time::getMillisecondCounterHiRes() - stripMessageTime > 1700.0) stripMessage.clear();
+        }
+    }
+    // Auto Gain rocker and its readout
+    {
+        const bool ag = proc.apvts.getRawParameterValue (ids::autoGain)->load() > 0.5f;
+        if (ag != agState) { agState = ag; repaintDesign (rockerR.expanded (6.0f)); repaintDesign (readoutR.expanded (2.0f)); }
+        const float agDb = proc.meterAgDb.load();
+        if (agState && std::abs (agDb - shownAgDb) >= 0.05f) { shownAgDb = agDb; repaintDesign (readoutR.expanded (2.0f)); }
     }
     const bool lim = (int) std::lround (proc.apvts.getRawParameterValue (ids::mode)->load()) == 1;
     if (lim != modeLimit) { modeLimit = lim; repaintDesign (modeArea); }

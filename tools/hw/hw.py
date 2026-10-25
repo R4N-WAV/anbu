@@ -81,10 +81,10 @@ def key_rect(i):
 
 def vu_frac(d): return (10 ** (d / 20) - 0.1) / (10 ** (3 / 20) - 0.1)
 def meter_angle(f): return -SPAN + 2 * SPAN * f
-def gr_frac(d): return math.log(1 + d / 3.0) / math.log(1 + 20 / 3.0)   # progressive: 1 dB steps are wide at the top of the scale
+def gr_frac(d): return d / 20.0                          # linear: an even curve, every 2 dB numbered, a tick at every dB
 def gr_angle(d): return meter_angle(1 - gr_frac(d))      # GR reads right to left: 0 at the right
-GR_LABELS = (0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20)
-GR_MINOR = (0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 7, 9, 11, 13, 14, 16, 17, 18, 19)
+GR_LABELS = (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
+GR_MINOR = (1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
 
 # ------------------------------------------------------------------ scene maps
 class Scene:
@@ -452,9 +452,9 @@ def meter_face(sc, out_mode):
     labels = []
     if not out_mode:
         for d in GR_LABELS: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 14, METER_R, 1.5))
-        for d in GR_MINOR: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 7, METER_R, 1.0) * 0.75)
+        for d in GR_MINOR: ink = np.maximum(ink, seg(gr_angle(d), METER_R - 8, METER_R, 1.1) * 0.8)
         for d in GR_LABELS:
-            a = gr_angle(d); labels.append((str(d), px + (METER_R + 17) * math.sin(a), py - (METER_R + 17) * math.cos(a)))
+            a = gr_angle(d); labels.append((str(d), px + (METER_R + 18) * math.sin(a), py - (METER_R + 18) * math.cos(a)))
         cap = 'GAIN REDUCTION'
     else:
         for d in (-20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3): ink = np.maximum(ink, seg(meter_angle(vu_frac(d)), METER_R - 14, METER_R, 1.5))
@@ -464,7 +464,7 @@ def meter_face(sc, out_mode):
             labels.append((t, px + (METER_R + 18) * math.sin(a), py - (METER_R + 18) * math.cos(a)))
         cap = 'OUTPUT LEVEL'
     full = np.zeros((sc.H, sc.W), np.float32); full[sl] = ink * inside
-    items = [dict(font=F_BAR6, size=16 if out_mode else 14.5, text=t, x=x, y=y) for t, x, y in labels]
+    items = [dict(font=F_BAR6, size=16 if out_mode else 15, text=t, x=x, y=y) for t, x, y in labels]
     items.append(dict(font=F_BAR5, size=10, text=cap, x=FACE[0] + 28, y=FACE[1] + 206, anchor='l', track=0.14))
     items.append(dict(font=F_BAR5, size=10, text='dB', x=FACE[0] + FACE[2] - 28, y=FACE[1] + 206, anchor='r', track=0.06))
     full = np.maximum(full, sc.text_mask(items))

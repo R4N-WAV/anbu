@@ -362,6 +362,31 @@ int main (int argc, char** argv)
                     juce::String::formatted ("Auto Gain, PR %g Color %g In %+g %s: loudness out - in %+.2f dB (1-2 s after the change), %+.3f dB (6-12 s after); correction %+.1f dB",
                                              c.pr, c.color, c.input, c.mode ? "Limit" : "Compress", eSettle, eLate, p->meterAgDb.load()));
         }
+        // turning Peak reduction down (or loading a lighter preset) must not blast out with the old, larger gain:
+        // around a change the output never peaks much above the input
+        for (const auto& jump : { std::pair<float, float> { 100.0f, 0.0f }, { 90.0f, 20.0f }, { 80.0f, 40.0f } })
+        {
+            auto q = make (48000, 512);
+            setParam (*q, ids::autoGain, 1.0f); setParam (*q, ids::pr, jump.first);
+            Signal sig { Signal::pink, 48000 };
+            juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+            float inPeak = 0.0f, outPeak = 0.0f;
+            for (int k = 0; k < (int) (6.0 * 48000 / 512); ++k)
+            {
+                if (k == (int) (3.0 * 48000 / 512)) setParam (*q, ids::pr, jump.second);
+                for (int i = 0; i < 512; ++i)
+                {
+                    const float v = sig.next() * ((i / 64) % 5 == 0 ? 2.5f : 1.0f);      // with transients
+                    b.setSample (0, i, v); b.setSample (1, i, v); inPeak = juce::jmax (inPeak, std::abs (v));
+                }
+                q->processBlock (b, m);
+                if (k >= (int) (3.0 * 48000 / 512))
+                    for (int i = 0; i < 512; ++i) outPeak = juce::jmax (outPeak, std::abs (b.getSample (0, i)));
+            }
+            report (db (outPeak) < db (inPeak) + 3.0f,
+                    juce::String::formatted ("Auto Gain, PR %g -> %g: output peak after the change %+.1f dBFS (input peak %+.1f dBFS)",
+                                             jump.first, jump.second, db (outPeak), db (inPeak)));
+        }
         // silence holds the correction (no runaway), and it stays finite
         auto p = make (48000, 512);
         setParam (*p, ids::autoGain, 1.0f); setParam (*p, ids::pr, 70.0f);

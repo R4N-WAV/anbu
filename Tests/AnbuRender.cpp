@@ -19,10 +19,24 @@ int main (int argc, char** argv)
     const int n = (int) in.size() / 2;
     AnbuProcessor p;
     int block = 512; double fs = 48000.0;
+    // timed changes: at=<seconds>:<id>=<value> (applied at the first block that starts at or after that time);
+    // ramp=<t0>-<t1>:<id>=<v0>..<v1> moves a parameter linearly, block by block (like a knob being turned)
+    struct Timed { double t0, t1; juce::String id; float v0, v1; };
+    std::vector<Timed> timed;
     for (int i = 3; i < argc; ++i)
     {
         juce::String a (argv[i]); auto k = a.upToFirstOccurrenceOf ("=", false, false); auto v = a.fromFirstOccurrenceOf ("=", false, false);
         if (k == "block") { block = v.getIntValue(); continue; }
+        if (k == "at" || k == "ramp")
+        {
+            const auto when = v.upToFirstOccurrenceOf (":", false, false), what = v.fromFirstOccurrenceOf (":", false, false);
+            const auto id = what.upToFirstOccurrenceOf ("=", false, false), val = what.fromFirstOccurrenceOf ("=", false, false);
+            Timed t { when.upToFirstOccurrenceOf ("-", false, false).getDoubleValue(), 0.0, id, val.upToFirstOccurrenceOf ("..", false, false).getFloatValue(), 0.0f };
+            t.t1 = k == "ramp" ? when.fromFirstOccurrenceOf ("-", false, false).getDoubleValue() : t.t0;
+            t.v1 = k == "ramp" ? val.fromFirstOccurrenceOf ("..", false, false).getFloatValue() : t.v0;
+            timed.push_back (t);
+            continue;
+        }
         if (auto* prm = dynamic_cast<juce::RangedAudioParameter*> (p.apvts.getParameter (k)))
             prm->setValueNotifyingHost (prm->convertTo0to1 (v.getFloatValue()));
         else std::fprintf (stderr, "unknown parameter %s\n", k.toRawUTF8());
@@ -41,6 +55,14 @@ int main (int argc, char** argv)
     for (int pos = 0; pos < n + lat; pos += block)
     {
         const int m = juce::jmin (block, n + lat - pos);
+        const double now = (double) pos / fs;
+        for (auto& t : timed)
+            if (now >= t.t0 && now <= t.t1 + (double) block / fs)
+                if (auto* prm = dynamic_cast<juce::RangedAudioParameter*> (p.apvts.getParameter (t.id)))
+                {
+                    const double u = t.t1 > t.t0 ? juce::jlimit (0.0, 1.0, (now - t.t0) / (t.t1 - t.t0)) : 1.0;
+                    prm->setValueNotifyingHost (prm->convertTo0to1 ((float) (t.v0 + u * (t.v1 - t.v0))));
+                }
         buf.setSize (2, m, false, false, true);
         for (int i = 0; i < m; ++i)
         {

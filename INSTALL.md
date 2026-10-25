@@ -44,7 +44,7 @@ To uninstall, delete those two files (Finder: **Go → Go to Folder…**, `/Libr
 | Oversampling | Off / 2× / 4× / 8×. 4× is the normal setting. |
 | Bypass | The small key under Noise level (also linked to your host's bypass). Passes the input through with the same delay, crossfaded so it never clicks. |
 | Phase | Low latency (a few samples of delay) or Linear (cleaner phase, about 1.3 ms of delay at 48 kHz). |
-| Auto Gain | The rocker under Phase. Matches what comes out to what went in, in loudness (measured like a loudness meter, ITU-R BS.1770), so you hear what Anbu does, not that it is louder or quieter. It re-matches about half a second after you change something and then holds still, so it does not undo the compression. Output still works as a trim on top. The display shows the correction. |
+| Auto Gain | The rocker under Phase. Matches what comes out to what went in, in loudness (measured like a loudness meter, ITU-R BS.1770), so you hear what Anbu does, not that it is louder or quieter. After you change something it follows within a fraction of a second (while it settles, the output is never let louder than the input, so turning Peak reduction down or loading a lighter preset can't blast), then holds still, so it does not undo the compression. Output still works as a trim on top. The display shows the correction. |
 
 All controls move in whole steps. The plugin reports its delay to the host, also when bypassed, so tracks stay in time.
 
@@ -61,9 +61,9 @@ All controls move in whole steps. The plugin reports its delay to the host, also
 - **Knobs and fader:** drag up/down. Double-click = default. Mouse wheel works. While you move one, its name and value show in the display. The lamp ring around a knob follows its value and is dark at the knob's zero; Input and Output light from 0 dB outwards.
 - **Keys:** click. The pressed key sits lower and its legend lights up.
 - **Bypass:** the colour drains out of the panel into the Bypass key; switching back pours it out again (under a second each way). It works on a still of the panel, so it costs only a few milliseconds per frame.
-- **Needle meter:** click *GR* or *OUT* on the meter face. GR shows gain reduction, read from right to left (rests at 0 on the right, 20 dB at the left). The scale is progressive like on studio GR meters: every dB from 0 to 6 is numbered and wide, so 2, 3 or 4 dB of reduction reads at a glance. It is zeroed at idle, so high Peak reduction settings read 0 with no signal. OUT shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
-- **Display:** beige = output spectrum; orange = the harmonics and distortion Anbu adds, at their true level (at Peak reduction 0 and Color 0 they sit about 50 dB below the signal); white line = Anbu's tone curve at the current settings.
-- **Analyser window:** the arrows in the display's corner open a larger analyser in its own window (also input, peak hold and a 60/90 dB range). Drag its top bar to move it, the corner to resize, × to close.
+- **Needle meter:** click *GR* or *OUT* on the meter face. GR shows gain reduction, read from right to left (rests at 0 on the right, 20 dB at the left). Every 2 dB is numbered with a tick at every dB in between, on an even scale, so 2, 3 or 4 dB of reduction reads at a glance. It is zeroed at idle, so high Peak reduction settings read 0 with no signal. OUT shows output level with VU timing (0 on the scale = −18 dBFS RMS). The choice is saved with the project.
+- **Display:** beige = output spectrum; orange = the harmonics and distortion Anbu adds, at their true level (at Peak reduction 0 and Color 0 they sit about 50 dB below the signal); white line = Anbu's tone curve at the current settings (scale on the left, ±6 dB, gridlines every 3 dB).
+- **Analyser window:** the arrows in the display's corner open a larger analyser in its own window (also input, peak hold, a 60/90 dB spectrum range and a ±3/±6/±12/±24 dB tone range). Drag its top bar to move it, the corner to resize, × to close.
 - The plugin window can be resized from the bottom-right corner.
 
 ## Troubleshooting

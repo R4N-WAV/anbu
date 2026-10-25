@@ -282,7 +282,7 @@ const juce::Rectangle<float> pillGR { 732.0f, 66.0f, 36.0f, 22.0f }, pillOut { 7
 
 const juce::Rectangle<float> screenR = R (HW::screen);
 constexpr float plotX0 = 320.0f, plotX1 = 814.0f, plotY0 = 356.0f, plotY1 = 508.0f;
-constexpr float specTop = -36.0f, specBot = -96.0f, toneRange = 12.0f;
+constexpr float specTop = -36.0f, specBot = -96.0f, toneRange = 6.0f;      // tone curve: +-6 dB in the small display
 const juce::Rectangle<float> expandR { 798.0f, 327.0f, 22.0f, 22.0f };
 const juce::Rectangle<float> readoutR { 297.0f, 326.0f, 300.0f, 24.0f };
 
@@ -306,8 +306,8 @@ const juce::String logoRest = juce::String (juce::CharPointer_UTF8 ("\xe0\xae\xa
 
 // needle scale
 float vuFrac (float d) { return (std::pow (10.0f, d / 20.0f) - 0.1f) / (std::pow (10.0f, 3.0f / 20.0f) - 0.1f); }
-// GR scale: progressive (same as the rendered face, tools/hw): every dB is wide near the top of the scale
-float grFrac (float d) { d = juce::jlimit (0.0f, 21.5f, d); return std::log (1.0f + d / 3.0f) / std::log (1.0f + 20.0f / 3.0f); }
+// GR scale: linear, 0-20 dB (same as the rendered face, tools/hw)
+float grFrac (float d) { return juce::jlimit (0.0f, 21.0f, d) / 20.0f; }
 float fracAngle (float f) { return -meterSpan + 2.0f * meterSpan * f; }
 
 // analyser maths shared by the panel and the window
@@ -516,7 +516,7 @@ public:
         const float top = -24.0f, bot = range90 ? -114.0f : -84.0f, step = range90 ? 18.0f : 12.0f;
         auto sy = [&] (float d) { return y0 + (top - d) / (top - bot) * (y1 - y0); };
         const float ym = 0.5f * (y0 + y1);
-        auto ey = [&] (float d) { return ym - d / 6.0f * 0.5f * (y1 - y0); };
+        auto ey = [&] (float d) { return ym - d / toneR * 0.5f * (y1 - y0); };
         {
             juce::Path grid, major;
             for (int f : { 30, 40, 50, 60, 70, 80, 90, 200, 300, 400, 500, 600, 700, 800, 900, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000 })
@@ -525,15 +525,20 @@ public:
             for (float d = top - step; d > bot + 0.1f; d -= step) { grid.startNewSubPath (x0, sy (d)); grid.lineTo (x1, sy (d)); }
             major.addRectangle (x0, y0, x1 - x0, y1 - y0);
             major.startNewSubPath (x0, ey (0.0f)); major.lineTo (x1, ey (0.0f));
+            for (int k : { -1, 1 }) { grid.startNewSubPath (x0, ey (toneR * 0.5f * (float) k)); grid.lineTo (x1, ey (toneR * 0.5f * (float) k)); }
             g.setColour (T.grid);    g.strokePath (grid, juce::PathStrokeType (1.0f));
             g.setColour (T.gridMaj); g.strokePath (major, juce::PathStrokeType (1.0f));
         }
         const auto fLab = fonts.ui (500, 13.0f);
         for (float d = top; d >= bot - 0.1f; d -= step)
             text (g, fLab, fixMinus (juce::String ((int) d)), { x0 - 66.0f, sy (d) - 9.0f, 56.0f, 18.0f }, juce::Justification::centredRight, hex (0x8f8574));
-        for (int d : { -6, -3, 0, 3, 6 })
-            text (g, fLab, d > 0 ? "+" + juce::String (d) : fixMinus (juce::String (d)), { x1 + 10.0f, ey ((float) d) - 9.0f, 56.0f, 18.0f },
-                  juce::Justification::centredLeft, hex (0xd9ccb4));
+        for (int k = -2; k <= 2; ++k)
+        {
+            const float d = toneR * 0.5f * (float) k;
+            auto t = std::abs (d - std::round (d)) < 0.01f ? juce::String ((int) std::round (std::abs (d))) : juce::String (std::abs (d), 1);
+            t = d > 0.0f ? "+" + t : d < 0.0f ? minus + t : juce::String ("0");
+            text (g, fLab, t, { x1 + 10.0f, ey (d) - 9.0f, 56.0f, 18.0f }, juce::Justification::centredLeft, hex (0xd9ccb4));
+        }
         const std::pair<int, const char*> fl[] = { { 20, "20" }, { 50, "50" }, { 100, "100" }, { 200, "200" }, { 500, "500" }, { 1000, "1k" },
                                                    { 2000, "2k" }, { 5000, "5k" }, { 10000, "10k" }, { 20000, "20k" } };
         for (auto& [f, t] : fl)
@@ -565,7 +570,7 @@ public:
             g.strokePath (specPath (spec, spec.harm, x0, x1, y0, y1, top, bot, false), juce::PathStrokeType (1.3f, juce::PathStrokeType::curved));
         }
         {
-            const auto tp = tonePath (spec, x0, x1, y0, y1, 6.0f);
+            const auto tp = tonePath (spec, x0, x1, y0, y1, toneR);
             g.setColour (hex (0xf4eada).withAlpha (0.15f));
             g.strokePath (tp, juce::PathStrokeType (9.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
             g.setColour (hex (0xf4eada));
@@ -595,19 +600,22 @@ public:
         };
         item (0, "Output"); item (1, "Input"); item (2, "Peak hold"); item (3, "Harmonics"); item (4, "Tone");
 
-        const auto fBtn = fonts.ui (600, 14.0f);
-        juce::Rectangle<float> b60, b90, box;
-        rangeRects (b60, b90, box);
-        text (g, fLeg, "Range", { box.getX() - 70.0f, fy - 9.0f + 1.0f, 60.0f, 18.0f }, juce::Justification::centredRight, T.label);
-        g.setColour (hex (0x0e0303));
-        g.fillRoundedRectangle (box, 4.0f);
-        for (int i = 0; i < 2; ++i)
+        const auto fBtn = fonts.ui (600, 13.5f);
+        auto segmented = [&] (const Seg& sg, int active, const juce::String& label)
         {
-            const auto r = i == 0 ? b60 : b90;
-            const bool on = (i == 1) == range90;
-            if (on) { g.setColour (T.label.withAlpha (0.22f)); g.fillRoundedRectangle (r, 3.0f); }
-            text (g, fBtn, i == 0 ? "60 dB" : "90 dB", r.translated (0.0f, 0.5f), juce::Justification::centred, on ? T.label : hex (0x7c7464));
-        }
+            text (g, fLeg, label, { sg.box.getX() - 70.0f, fy - 9.0f + 1.0f, 62.0f, 18.0f }, juce::Justification::centredRight, T.label);
+            g.setColour (hex (0x0e0303));
+            g.fillRoundedRectangle (sg.box, 4.0f);
+            for (size_t i = 0; i < sg.r.size(); ++i)
+            {
+                const bool on = (int) i == active;
+                if (on) { g.setColour (T.label.withAlpha (0.22f)); g.fillRoundedRectangle (sg.r[i], 3.0f); }
+                text (g, fBtn, sg.t[i], sg.r[i].translated (0.0f, 0.5f), juce::Justification::centred, on ? T.label : hex (0x7c7464));
+            }
+        };
+        const auto [spec2, tone2] = footerControls();
+        segmented (spec2, range90 ? 1 : 0, "Spectrum");
+        segmented (tone2, toneIndex(), "Tone");
         g.setColour (T.zari.withAlpha (0.4f));
         g.drawRect (all, 1.0f);
     }
@@ -617,10 +625,9 @@ public:
         const auto p = toDesign (e.position);
         dragging = false;
         if (closeRect().contains (p)) { if (onClose) onClose(); return; }
-        juce::Rectangle<float> b60, b90, box;
-        rangeRects (b60, b90, box);
-        if (b60.contains (p)) { range90 = false; repaint(); return; }
-        if (b90.contains (p)) { range90 = true; repaint(); return; }
+        const auto [sp, tn] = footerControls();
+        for (size_t i = 0; i < sp.r.size(); ++i) if (sp.r[i].contains (p)) { range90 = i == 1; repaint(); return; }
+        for (size_t i = 0; i < tn.r.size(); ++i) if (tn.r[i].contains (p)) { toneR = kToneRanges[i]; repaint(); return; }
         if (p.y < 40.0f)
             if (auto* top = getTopLevelComponent())
             {
@@ -637,11 +644,12 @@ public:
     void mouseMove (const juce::MouseEvent& e) override
     {
         const auto p = toDesign (e.position);
-        juce::Rectangle<float> b60, b90, box;
-        rangeRects (b60, b90, box);
+        const auto [sp, tn] = footerControls();
         const bool hc = closeRect().contains (p);
         if (hc != hoverClose) { hoverClose = hc; repaint(); }
-        setMouseCursor (hc || b60.contains (p) || b90.contains (p) ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+        bool onBtn = false;
+        for (auto* sg : { &sp, &tn }) for (auto& r : sg->r) onBtn = onBtn || r.contains (p);
+        setMouseCursor (hc || onBtn ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
     }
     void mouseExit (const juce::MouseEvent&) override
     {
@@ -654,14 +662,34 @@ private:
         return { p.x * (float) W / (float) juce::jmax (1, getWidth()), p.y * (float) H / (float) juce::jmax (1, getHeight()) };
     }
     juce::Rectangle<float> closeRect() const { return { (float) W - 42.0f, 6.0f, 28.0f, 28.0f }; }
-    void rangeRects (juce::Rectangle<float>& b60, juce::Rectangle<float>& b90, juce::Rectangle<float>& box) const
+    // footer: two segmented controls, right-aligned: tone range (+-3 .. +-24 dB) and spectrum range (60 / 90 dB)
+    struct Seg { juce::Rectangle<float> box; std::vector<juce::Rectangle<float>> r; juce::StringArray t; };
+    static constexpr float kToneRanges[4] = { 3.0f, 6.0f, 12.0f, 24.0f };
+    int toneIndex() const { for (int i = 0; i < 4; ++i) if (std::abs (toneR - kToneRanges[i]) < 0.01f) return i; return 1; }
+    Seg makeSeg (const juce::StringArray& labels, float right) const
     {
-        const auto f = fonts.ui (600, 14.0f);
-        const float w60 = juce::GlyphArrangement::getStringWidth (f, "60 dB") + 20.0f, w90 = juce::GlyphArrangement::getStringWidth (f, "90 dB") + 20.0f;
-        const float bw = w60 + w90 + 3.0f + 6.0f, right = (float) W - 18.0f, cy = (float) H - 24.0f;
-        box = { right - bw, cy - 16.0f, bw, 32.0f };
-        b60 = { box.getX() + 3.0f, cy - 13.0f, w60, 26.0f };
-        b90 = { b60.getRight() + 3.0f, cy - 13.0f, w90, 26.0f };
+        const auto f = fonts.ui (600, 13.5f);
+        const float cy = (float) H - 24.0f;
+        Seg sg; sg.t = labels;
+        float w = 6.0f;
+        for (auto& l : labels) w += juce::GlyphArrangement::getStringWidth (f, l) + 16.0f + 3.0f;
+        w -= 3.0f;
+        sg.box = { right - w, cy - 16.0f, w, 32.0f };
+        float x = sg.box.getX() + 3.0f;
+        for (auto& l : labels)
+        {
+            const float bw = juce::GlyphArrangement::getStringWidth (f, l) + 16.0f;
+            sg.r.push_back ({ x, cy - 13.0f, bw, 26.0f });
+            x += bw + 3.0f;
+        }
+        return sg;
+    }
+    std::pair<Seg, Seg> footerControls() const
+    {
+        const juce::String pm = juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"));      // plus-minus
+        auto sp = makeSeg ({ "60 dB", "90 dB" }, (float) W - 18.0f);
+        auto tn = makeSeg ({ pm + "3", pm + "6", pm + "12", pm + "24" }, sp.box.getX() - 84.0f);
+        return { sp, tn };
     }
 
     const Spectrum& spec;
@@ -670,6 +698,7 @@ private:
     std::function<float()> readoutAlpha;
     std::function<void()> onClose;
     bool range90 = true, dragging = false, hoverClose = false;
+    float toneR = 6.0f;                 // tone-curve range of the plot (+- dB)
     juce::ComponentDragger dragger;
 };
 }
@@ -956,8 +985,8 @@ void AnbuEditor::renderStatic (juce::Graphics& g, float ppu)
     juce::Path grid, major;
     for (int f : { 50, 200, 500, 2000, 5000 }) { const float x = xOfF (f, plotX0, plotX1); grid.startNewSubPath (x, plotY0); grid.lineTo (x, plotY1); }
     for (int f : { 100, 1000, 10000 }) { const float x = xOfF (f, plotX0, plotX1); major.startNewSubPath (x, plotY0); major.lineTo (x, plotY1); }
-    for (float d : { 6.0f, -6.0f }) { grid.startNewSubPath (plotX0, ey (d)); grid.lineTo (plotX1, ey (d)); }
-    for (float d : { 12.0f, 0.0f, -12.0f }) { major.startNewSubPath (plotX0, ey (d)); major.lineTo (plotX1, ey (d)); }
+    for (float d : { 3.0f, -3.0f }) { grid.startNewSubPath (plotX0, ey (d)); grid.lineTo (plotX1, ey (d)); }
+    for (float d : { 6.0f, 0.0f, -6.0f }) { major.startNewSubPath (plotX0, ey (d)); major.lineTo (plotX1, ey (d)); }
     major.startNewSubPath (plotX0, plotY0); major.lineTo (plotX0, plotY1);
     major.startNewSubPath (plotX1, plotY0); major.lineTo (plotX1, plotY1);
     g.setColour (T.grid);    g.strokePath (grid, juce::PathStrokeType (1.0f));
@@ -965,9 +994,9 @@ void AnbuEditor::renderStatic (juce::Graphics& g, float ppu)
 
     const auto fL = fonts.ui (500, 11.5f);
     const auto lab = hex (0x9a8e7c);
-    text (g, fL, "+12", { plotX0 - 7.0f - 40.0f, ey (12.0f) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, lab);
-    text (g, fL, "0", { plotX0 - 7.0f - 40.0f, ey (0.0f) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, lab);
-    text (g, fL, minus + "12", { plotX0 - 7.0f - 40.0f, ey (-12.0f) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, lab);
+    for (float d : { 6.0f, 3.0f, 0.0f, -3.0f, -6.0f })
+        text (g, fL, d > 0.0f ? "+" + juce::String ((int) d) : d < 0.0f ? minus + juce::String ((int) -d) : juce::String ("0"),
+              { plotX0 - 7.0f - 40.0f, ey (d) - 8.0f, 40.0f, 16.0f }, juce::Justification::centredRight, std::abs (d) == 3.0f ? lab.withAlpha (0.6f) : lab);
     const std::pair<int, const char*> fl[] = { { 100, "100" }, { 1000, "1k" }, { 10000, "10k" } };
     for (auto& [f, t] : fl)
         text (g, fL, t, { xOfF (f, plotX0, plotX1) - 22.0f, plotY1 + 5.0f, 44.0f, 16.0f }, juce::Justification::centred, lab);

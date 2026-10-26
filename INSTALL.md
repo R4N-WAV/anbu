@@ -6,13 +6,20 @@ Anbu is an optical-style leveling amplifier with a colour stage, made mainly for
 - **Mac** (macOS 10.13 or newer, Apple Silicon and Intel): VST3 and Audio Unit (AU), for Logic Pro,
   GarageBand, Ableton Live, FL Studio, Cubase, Studio One, Reaper, Bitwig and other hosts.
 
-Downloads: `Anbu-VST3-Windows.zip` and `Anbu-macOS.zip`, from the
+Downloads: `Anbu-Setup-Windows.exe` (or `Anbu-VST3-Windows.zip`) and `Anbu-macOS.zip`, from the
 [latest release](https://github.com/R4N-WAV/anbu/releases/tag/latest) on GitHub.
 
 ## Install on Windows
+**With the setup wizard (easiest):**
+1. Close your music app, then run **Anbu-Setup-Windows.exe**.
+2. Anbu isn't code-signed yet, so Windows may show *Windows protected your PC*: click **More info** → **Run anyway**. Allow the admin prompt (the VST3 folder is a system folder).
+3. Click through the wizard. It installs `Anbu.vst3` into `C:\Program Files\Common Files\VST3` (you can choose another VST3 folder), replaces an older version cleanly and adds an uninstaller (**Settings → Apps → Anbu**). Your own presets in Documents are never touched.
+4. In your host, rescan plugins (FL Studio: **Options → Manage plugins → Find installed plugins**) and load **Anbu** (listed under **R4N**) on an insert.
+
+**By hand, with the zip:**
 1. Right-click the zip → **Properties** → tick **Unblock** → **OK**. Unzip it.
 2. Copy the folder **`Anbu.vst3`** into `C:\Program Files\Common Files\VST3`.
-3. In your host, rescan plugins (FL Studio: **Options → Manage plugins → Find installed plugins**) and load **Anbu** on an insert.
+3. Rescan plugins in your host, as above.
 
 ## Install on Mac
 Anbu isn't notarized by Apple (that needs a paid Apple developer account), so the first time macOS
@@ -107,6 +114,7 @@ published as the `latest` release. Other tools (`-DANBU_BUILD_TOOLS=ON`, `-DANBU
 - `Resources/hw` – rendered panel art; `Resources/ui` – fonts (Catamaran and Barlow Semi Condensed, SIL Open Font License, see `Resources/FONT_LICENSE_*.txt`).
 - `tools/hw` – the panel renderer (below). `tools/presets/makeup.py` – calibrates the factory presets (Peak reduction for a target amount of leveling, Output for equal loudness).
 - `packaging/mac` – the Mac installer (`package.sh` builds `Anbu-macOS.zip`).
+- `packaging/windows` – the Windows setup wizard (Inno Setup 6.7: `anbu.iss`; artwork from `make_images.py`, cut from the rendered panel).
 
 ## Panel artwork
 The faceplate is rendered offline from a 3D description of the panel: `tools/hw/hw.py` describes the surfaces and materials,

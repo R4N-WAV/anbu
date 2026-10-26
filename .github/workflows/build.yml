@@ -69,11 +69,93 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/* -DestinationPath Anbu-VST3-Windows.zip -Force
 
-      - name: Keep the zip for the release job
+      - name: Build the setup wizard (Inno Setup)
+        shell: pwsh
+        run: |
+          # the wizard's dark style and colours need Inno Setup 6.7 or newer
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $ok = (Test-Path $iscc) -and ((Get-Item $iscc).VersionInfo.FileVersionRaw -ge [version]"6.7.0")
+          if (-not $ok) {
+            Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe" -OutFile is.exe
+            Start-Process .\is.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait
+          }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup not found" }
+          Write-Output "Inno Setup $((Get-Item $iscc).VersionInfo.ProductVersion)"
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(Anbu VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" "/DPluginDir=$PWD\dist" "/DOutDir=$PWD\installer" packaging\windows\anbu.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem installer
+
+      - name: Screenshots of the setup wizard (welcome page, folder page)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot ($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("$PWD\$name")
+          }
+          $p = Start-Process installer\Anbu-Setup-Windows.exe -PassThru
+          Start-Sleep -Seconds 8
+          Shot "wizard-1-welcome.png"
+          $ws = New-Object -ComObject WScript.Shell
+          $w = Get-Process | Where-Object { $_.MainWindowTitle -like "*Anbu*" } | Select-Object -First 1
+          if ($w) { [void] $ws.AppActivate($w.Id) }
+          Start-Sleep -Milliseconds 600
+          [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+          Start-Sleep -Seconds 2
+          Shot "wizard-2-folder.png"
+          Get-Process | Where-Object { $_.ProcessName -like "Anbu-Setup*" -or $_.ProcessName -like "*.tmp" -or $_.MainWindowTitle -like "*Anbu*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
+      - name: Test the setup wizard (install, check, uninstall)
+        shell: pwsh
+        run: |
+          $vst = "$env:CommonProgramFiles\VST3\Anbu.vst3"
+          $bin = "$vst\Contents\x86_64-win\Anbu.vst3"
+          # an older copy is replaced
+          New-Item -ItemType Directory -Force -Path "$vst\Contents\stale" | Out-Null
+          $p = Start-Process installer\Anbu-Setup-Windows.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=setup.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content setup.log | Select-Object -Last 30; throw "setup failed ($($p.ExitCode))" }
+          if (-not (Test-Path $bin)) { throw "not installed: $bin" }
+          if (Test-Path "$vst\Contents\stale") { throw "the old version was not replaced" }
+          if ((Get-FileHash $bin).Hash -ne (Get-FileHash "dist\Anbu.vst3\Contents\x86_64-win\Anbu.vst3").Hash) { throw "installed file differs" }
+          $un = "${env:ProgramFiles}\R4N\Anbu\unins000.exe"
+          if (-not (Test-Path $un)) { throw "uninstaller missing" }
+          if (Get-ChildItem "$env:CommonProgramFiles\VST3" -Filter "unins*") { throw "uninstaller files in the VST3 folder" }
+          Write-Output "installed OK"
+          # the uninstaller hands over to a copy of itself and returns at once: wait for the files to go
+          Start-Process $un -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait | Out-Null
+          for ($i = 0; $i -lt 60 -and ((Test-Path $vst) -or (Test-Path $un)); $i++) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path $vst) { throw "uninstall left $vst" }
+          if (Test-Path $un) { throw "uninstall left the uninstaller" }
+          Write-Output "uninstalled OK"
+
+      - name: Upload the setup wizard as a downloadable file
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anbu-Setup-Windows
+          path: installer/Anbu-Setup-Windows.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Keep the zip, the setup and the screenshots for the release job
+        shell: pwsh
+        run: |
+          Copy-Item installer\Anbu-Setup-Windows.exe .
+          New-Item -ItemType Directory -Force -Path shots | Out-Null
+          Get-ChildItem wizard-*.png -ErrorAction SilentlyContinue | Copy-Item -Destination shots
+
+      - name: Upload for the release job
         uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: Anbu-VST3-Windows.zip
+          path: |
+            Anbu-VST3-Windows.zip
+            Anbu-Setup-Windows.exe
+            shots/*.png
           if-no-files-found: error
           retention-days: 7
 
@@ -243,13 +325,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -e
-          ls -l Anbu-VST3-Windows.zip Anbu-macOS.zip
+          ls -l Anbu-Setup-Windows.exe Anbu-VST3-Windows.zip Anbu-macOS.zip
+          ls -l shots || true
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           notes=$(printf '%s\n' \
             "Latest validated build from commit ${{ github.sha }}." \
             "" \
-            "- **Windows** (VST3, 64-bit): Anbu-VST3-Windows.zip. Unzip, copy the Anbu.vst3 folder into C:\\Program Files\\Common Files\\VST3 and rescan plugins in your host." \
+            "- **Windows** (VST3, 64-bit): **Anbu-Setup-Windows.exe**. Run it and click through the wizard (Windows may show *Windows protected your PC*: click *More info* > *Run anyway*), then rescan plugins in your host. Or the zip: Anbu-VST3-Windows.zip, copy Anbu.vst3 into C:\\Program Files\\Common Files\\VST3." \
             "- **Mac** (VST3 + Audio Unit, Apple Silicon and Intel, macOS 10.13+): Anbu-macOS.zip. Unzip and open Install Anbu.pkg. It is not notarized by Apple: the first time, macOS blocks it; allow it in System Settings > Privacy & Security > Open Anyway." \
             "" \
             "Full guide: INSTALL.md (also inside both zips).")
-          gh release create latest Anbu-VST3-Windows.zip Anbu-macOS.zip --target "${{ github.sha }}" --title "Anbu - latest build" --notes "$notes" --latest
+          shots=$(ls shots/wizard-*.png 2>/dev/null || true)
+          gh release create latest Anbu-Setup-Windows.exe Anbu-VST3-Windows.zip Anbu-macOS.zip $shots --target "${{ github.sha }}" --title "Anbu - latest build" --notes "$notes" --latest
